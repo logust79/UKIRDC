@@ -2,3 +2,4 @@ test.py
 *.pyc
 *.db
 *.sqlite
+lib/*.pyc
