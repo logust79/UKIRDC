@@ -3,3 +3,4 @@ test.py
 *.db
 *.sqlite
 lib/*.pyc
+cadd_test.tsv
