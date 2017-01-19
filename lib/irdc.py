@@ -178,7 +178,7 @@ def format_excel(a,writer):
         worksheet = writer.sheets[sheet]
         shape = a[sheet].shape
         # wrap variants, pubmed
-        if sheet not in ['family_history','relatives']:
+        if sheet not in ['notes','relatives']:
             variant_index = header.index('variants')
             v_col = xw.utility.xl_col_to_name(variant_index)
             pubmed_index = header.index('pubmed')
@@ -188,22 +188,32 @@ def format_excel(a,writer):
             worksheet.set_column(':'.join([v_col,v_col]),20, wrap_fmt)
             worksheet.set_column(':'.join([p_col,p_col]),10, wrap_fmt)
             worksheet.set_column(':'.join([pr_col,pr_col]),10, wrap_fmt)
-            #a[sheet].reset_index(inplace=True)
+            
+            # add table
+            '''
             this_header = [{'header': di} for di in a[sheet].columns.tolist()]
             cell_range = xw.utility.xl_range(0,0,shape[0],shape[1])
             worksheet.add_table(cell_range,{'header_row': True,'columns':this_header})
-        elif sheet == 'family_history':
-            # family history, wider and wrap
-            #worksheet.set_column(0,20,wrap_fmt)
-            print ''
+            '''
+        elif sheet == 'notes':
+            # notes, wider and wrap
+            worksheet.set_column('A:A',20,wrap_fmt)
+            worksheet.set_column('B:B',40,wrap_fmt)
 '''
 write data to excel
 '''
-def write_to_excel(a,f):
+def write_to_excel(a,f,ped_loc=False):
     writer = pd.ExcelWriter(f,engine='xlsxwriter')
-    for k in ['recessive','dominant','X','family_history','relatives']:
+    for k in ['recessive','dominant','X','relatives']:
         a[k].to_excel(writer,sheet_name=k,index=False)
-   
+    # write notes. first transpose, then add pedigree figure if available
+    a['notes'].transpose().to_excel(writer,sheet_name='notes',header=False)
+    
+    # figure
+    if os.path.isfile(ped_loc):
+        worksheet = writer.sheets['notes']
+        worksheet.insert_image('D1',ped_loc)
+    
     format_excel(a,writer)
     writer.save()
 
@@ -774,16 +784,24 @@ class report:
             # write to excels for this and relatives
             self.done.extend(doing)
             for r in doing:
-                # add family_history to export
+                # add Notes to export, and find the pedigree figure
+                ped_loc = self.options['photo_folder']
                 if r == p:
-                    notes = json.loads(Patient(r,self.options).mysql['Notes'])
+                    this_p = Patient(r,self.options)
+                    # relatives:
+                    ped_loc = os.path.join(ped_loc, 'pt%s' % this_p.mysql['linked_id'], '_pedigree.png')
+                    notes = json.loads(this_p.mysql['Notes'])
                 else:
-                    notes = [v['Notes'] for k,v in result['relatives'].iteritems() if k == r][0]
-                fh = notes.get('Family History','NA')
-                export['family_history'] = pd.DataFrame({'family_history':[fh]})
+                    this_p = [v for k,v in result['relatives'].iteritems() if k == r][0]
+                    notes = this_p['Notes']
+                    ped_loc = os.path.join(ped_loc, 'pt%s' % this_p['patient_id'], '_pedigree.png')
+                # make notes a dict of arrays
+                for k in notes:
+                    notes[k] = [notes[k]]
+                export['notes'] = pd.DataFrame(notes)
                 # write to excel
                 f = os.path.join(self.options['output_dir'],r+'.xlsx')
-                write_to_excel(export,f)
+                write_to_excel(export,f,ped_loc)
         # write bad genes
         outf = open(self.options['bad_genes'],'w')
         outf.write(' '.join(set(self.G._bad_genes)))
