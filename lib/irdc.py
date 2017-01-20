@@ -54,16 +54,16 @@ def gap_check(l1,l2,gap_size):
     # check if l1 and l2 are close given gap_size
     if ((l1[0] <= l2[0] and l1[1] >= l2[0]) or # overlap
             (l1[0] >= l2[0] and l1[0] <= l2[1]) or # overlap
-            (l1[0] - l2[1] <= gap_size) or  # gap
-            (l2[0] - l1[1] <= gap_size)):    # gap
+            (abs(l1[0] - l2[1]) <= gap_size) or  # gap
+            (abs(l2[0] - l1[1]) <= gap_size)):    # gap
         return 'Y'
     else:
-        None
+        return None
 
 '''
 check if i is unique among given files. Files have to be first filtered against proband and relatives
 '''
-def _get_unique_cnv(i,files):
+def _get_exome_unique_cnv(i,files):
     bad = 0
     for f in files:
         inf = open(f,'r')
@@ -335,16 +335,21 @@ def find_item(obj, key):
                     if item is not None:
                         return item
 
-def scrutinise(obj):
-    Entrez.email = 'logust@yahoo.com'
-    if obj['lag']:
-        obj['lag'] = int(obj['lag']/3600/24) # convert it to days, at least 1 day
-        obj['lag'] = 1 if obj['lag'] < 1 else obj['lag']
+def pubmed_query(gene,keywords,lag=None,email='logust@yahoo.com'):
+    Entrez.email = email
+    reg = '\\b|\\b'.join(keywords)
+    reg = '\\b' + reg + '\\b'
+    reg = re.compile(reg, re.IGNORECASE)
+    term = gene + ' AND (' + ' OR '.join(['"' + t + '"' + '[Title/Abstract]' for t in keywords]) + ')'
+
+    if lag:
+        lag = int(lag/3600/24) # convert it to days, at least 1 day
+        lag = 1 if lag < 1 else lag
             # need to update
         attempt = 1
         while attempt <= 10:
             try:
-                search_results = Entrez.read(Entrez.esearch(db='pubmed', term=obj['smashed_all'], reldate=obj['lag'], datetype='pdat', usehistory='y'))
+                search_results = Entrez.read(Entrez.esearch(db='pubmed', term=term, reldate=lag, datetype='pdat', usehistory='y'))
                 break
             except URLError as err:
                 print ('!!URLError %s' % err)
@@ -355,7 +360,7 @@ def scrutinise(obj):
         attempt = 1
         while attempt <= 10:
             try:
-                search_results = Entrez.read(Entrez.esearch(db='pubmed',retmax=50, term=obj['smashed_all'], usehistory='y'))
+                search_results = Entrez.read(Entrez.esearch(db='pubmed',retmax=50, term=term, usehistory='y'))
                 break
             except URLError as err:
                 print ('URLError: %s at line 249' % err)
@@ -399,7 +404,7 @@ def scrutinise(obj):
         record = Entrez.read(handle)
         if record:
             # got something. let's do some calculation
-            for r in record:
+            for r in record['PubmedArticle']:
                 # calculate score
                 score = 0
                 pid = str(find_item(r, 'PMID'))
@@ -416,9 +421,9 @@ def scrutinise(obj):
 
                 title = find_item(r, 'ArticleTitle')
                 if title:
-                    score = score + len(obj['reg'].findall(title))
+                    score = score + len(reg.findall(title))
                 if abstract:
-                    score = score + len(obj['reg'].findall(abstract))
+                    score = score + len(reg.findall(abstract))
 
                 # add result to genes[gene_name]
                 if score:
@@ -481,8 +486,9 @@ class Patient:
         self.id = id
         self.options = options
         self.relatives = {}
-        self.rare_file_path = os.path.join(options['irdc_folder'],'combinedAnalysis/point_mutations/latest/rare_variants')
-        self.cnv_file_path = os.path.join(options['irdc_folder'],'combinedAnalysis/CNV')
+        self.exome_rare_file_path = os.path.join(options['irdc_exome_folder'],'combinedAnalysis/point_mutations/latest/rare_variants')
+        self.exome_cnv_file_path = os.path.join(options['irdc_exome_folder'],'combinedAnalysis/CNV')
+        self.wgs_rare_file_path = options['irdc_wgs_folder']
         self.G = G # a shared IRDC_genes object, to help translate symbols
         self.known = known
         self.retnet = retnet
@@ -498,7 +504,7 @@ class Patient:
         self.mysql = sqlite_utils.dict_factory(cursor,cursor.fetchone())
         self.irdc_id = self.mysql['project_associated_id']
         # find rare and cnv files locations
-        self.rare_file, self.cnv_file, self.cnv_X_file = self._populate_file_locations(self.mysql)
+        self.exome_rare_file, self.exome_cnv_file, self.exome_cnv_X_file, self.wgs_rare_file = self._populate_file_locations(self.mysql)
         '''
         find relatives and their Affected / HPO
         '''
@@ -523,7 +529,7 @@ class Patient:
         
         for k,v in self.relatives.iteritems():
             # get batch folder
-            v['rare_file'], v['cnv_file'], v['cnv_X_file'] = self._populate_file_locations(v)
+            v['exome_rare_file'], v['exome_cnv_file'], v['exome_cnv_X_file'], v['wgs_rare_file'] = self._populate_file_locations(v)
 
     '''
     populate file locations. One for rare file, two for cnv (cnv and cnv_X) files
@@ -531,19 +537,48 @@ class Patient:
     def _populate_file_locations(self,v):
         batch = 'IRDC_'+v['project_associated_id'].split('_')[1]
         cnv_name = '_'.join(v['project_associated_id'].split('_')[2:])
-        rare = os.path.join(self.rare_file_path, v['project_associated_id']+'.csv')
-        cnv = os.path.join(self.cnv_file_path,batch,'multi_exons',cnv_name+'_sorted_unique.bam.cnv')
-        cnv_x = os.path.join(self.cnv_file_path,batch,'multi_exons',cnv_name+'_sorted_unique.bam_X.cnv')
+        exome_rare = os.path.join(self.exome_rare_file_path, v['project_associated_id']+'.csv')
+        exome_cnv = os.path.join(self.exome_cnv_file_path,batch,'multi_exons',cnv_name+'_sorted_unique.bam.cnv')
+        exome_cnv_x = os.path.join(self.exome_cnv_file_path,batch,'multi_exons',cnv_name+'_sorted_unique.bam_X.cnv')
+        wgs_rare = os.path.join(self.wgs_rare_file_path,'rare-VEP_OXF_%s-annotations.csv' % v['Name'])
         return (
-            rare,
-            cnv if os.path.isfile(cnv) else None,
-            cnv_x if os.path.isfile(cnv_x) else None
+            exome_rare,
+            exome_cnv if os.path.isfile(exome_cnv) else None,
+            exome_cnv_x if os.path.isfile(exome_cnv_x) else None,
+            wgs_rare if os.path.isfile(wgs_rare) else None,
         )
     
+    '''
+    read csv 
+    return {
+        ENSG0000: {
+            original_symbol:
+            variants: [
+                id
+                genotype
+                filter
+                consequence
+                exac
+                kaviar
+                cadd
+                het_p:[who,who,who]
+                hom_p:[who,who,who]
+            ]
+        }
+    }
+
+    '''
+    def _get_wgs_rare_snp_genes(self, file):
+        result = {}
+        csvreader = csv.reader(open(file,'r'), delimiter=',', quotechar='"')
+        header = []
+        
+        return
     '''
     read csv.
     return {
         ENSG0000: {
+            original_symbol:
             variants: [
                 id
                 genotype
@@ -553,7 +588,7 @@ class Patient:
         }
     }
     '''
-    def _get_rare_snp_genes(self, file):
+    def _get_exome_rare_snp_genes(self, file):
         result = {}
         csvreader = csv.reader(open(file,'r'), delimiter=',', quotechar='"')
         header = []
@@ -612,7 +647,7 @@ class Patient:
         genes:[]
     ]
     '''
-    def _get_cnv(self, file):
+    def _get_exome_cnv(self, file):
         result = []
         inf = open(file,'r')
         header = []
@@ -649,8 +684,8 @@ class Patient:
     get unique cnv (excluding relatives)
     '''
     @property
-    def unique_cnv(self):
-        if getattr(self, '_unique_cnv', None) is None:
+    def exome_unique_cnv(self):
+        if getattr(self, '_exome_unique_cnv', None) is None:
             # find relatives (it doesn't matter if they are affected)
             relatives = []
             if self.relatives:
@@ -663,8 +698,8 @@ class Patient:
             cnv_X_files = []
             # the most recent batches are of different format. ignore those
             bad_batches = ['IRDC_batch7','IRDC_batch8','IRDC_batch9']
-            for folder in [i for i in os.listdir(self.cnv_file_path) if 'batch' in i and i not in bad_batches]:
-                for file in os.listdir(os.path.join(self.cnv_file_path,folder,'multi_exons')):
+            for folder in [i for i in os.listdir(self.exome_cnv_file_path) if 'batch' in i and i not in bad_batches]:
+                for file in os.listdir(os.path.join(self.exome_cnv_file_path,folder,'multi_exons')):
                     # relative?
                     flag = 0
                     for j in relatives:
@@ -672,19 +707,19 @@ class Patient:
                             flag = 1
                     if flag == 1: continue
                     
-                    f = os.path.join(self.cnv_file_path,folder,'multi_exons',file)
+                    f = os.path.join(self.exome_cnv_file_path,folder,'multi_exons',file)
                     if 'bam.cnv' in file:
                         cnv_files.append(f)
                     elif 'bam_X.cnv' in file:
                         cnv_X_files.append(f)
         
-            for i in self.cnv:
+            for i in self.exome_cnv:
                 # search all the files
                 bad = None
                 if i['chrom'] != 'X':
-                    bad = _get_unique_cnv(i,cnv_files)
+                    bad = _get_exome_unique_cnv(i,cnv_files)
                 else:
-                    bad = _get_unique_cnv(i,cnv_X_files)
+                    bad = _get_exome_unique_cnv(i,cnv_X_files)
                 if not bad:
                     result.append(i)
             # convert the data into a dict of genes
@@ -693,28 +728,27 @@ class Patient:
                 for g in i['genes']:
                     result2[g] = result2.get(g,[])
                     result2[g].append(i)
-            self._unique_cnv = result2
-        return self._unique_cnv
+            self._exome_unique_cnv = result2
+        return self._exome_unique_cnv
 
     @property
-    def cnv(self):
-        if getattr(self, '_cnv', None) is None:
-            if self.cnv_file:
-                self._cnv = self._get_cnv(self.cnv_file) + self._get_cnv(self.cnv_X_file)
+    def exome_cnv(self):
+        if getattr(self, '_exome_cnv', None) is None:
+            if self.exome_cnv_file:
+                self._exome_cnv = self._get_exome_cnv(self.exome_cnv_file) + self._get_exome_cnv(self.exome_cnv_X_file)
             else:
-                self._cnv = []
-        return self._cnv
+                self._exome_cnv = []
+        return self._exome_cnv
     
     '''
     extract genes from the rare_variant file
     '''
     @property
-    def rare_snp_genes(self):
-        if getattr(self, '_rare_snp_genes', None) is None:
-            rare_snp_genes = self._get_rare_snp_genes(self.rare_file)
-            #self._cnv = self._get_cnv(self.relatives[self.id]['cnv_file'])
-            self._rare_snp_genes = rare_snp_genes
-        return self._rare_snp_genes
+    def exome_rare_snp_genes(self):
+        if getattr(self, '_exome_rare_snp_genes', None) is None:
+            rare_snp_genes = self._get_exome_rare_snp_genes(self.exome_rare_file)
+            self._exome_rare_snp_genes = rare_snp_genes
+        return self._exome_rare_snp_genes
 
 class report:
     def __init__(self,options):
@@ -863,7 +897,7 @@ class report:
         # make P of relatives
         relatives_P = [Patient(i, self.options, self.G) for i in P.relatives]
         # extract all genes and push them to GENES. Note that G is only for translation
-        GENES = IRDC_genes(P.rare_snp_genes.keys() + P.unique_cnv.keys())
+        GENES = IRDC_genes(P.exome_rare_snp_genes.keys() + P.exome_unique_cnv.keys())
         GENES._bad_genes = self.G._bad_genes
         #G._bad_genes.extend(GENES._bad_genes)
         # hpos
@@ -904,7 +938,7 @@ class report:
             'X':[],
         }
 
-        for k1,v1 in P.rare_snp_genes.iteritems():
+        for k1,v1 in P.exome_rare_snp_genes.iteritems():
             # make a temp entry
             original_id = k1
             symbol = GENES.symbol.get(k1,None)
@@ -934,10 +968,9 @@ class report:
             pubmed = P.mongo.find_one({'key':key}) if this['symbol'] else {'result':{'results':[],'total_score':0}}
             if not pubmed:
                 # use scrutinise to search
-                OR = P.options['mongo']['key'][1:-1].split(',')
+                keywords = P.options['mongo']['key'][1:-1].split(',')
                 print 'search pubmed for '+this['symbol']
-                term = this['symbol'] + ' AND (' + ' OR '.join(['"' + t + '"' + '[Title/Abstract]' for t in OR]) + ')'
-                pubmed_result = scrutinise({'smashed_all':term,'lag':None})
+                pubmed_result = pubmed_query(this['symbol'],keywords)
                 pubmed = {'result':pubmed_result}
                 # update database
                 now = time.mktime(time.localtime())
@@ -952,14 +985,14 @@ class report:
             this['retnet'] = P.retnet.get(k1,{})
 
             # check which group it belongs
-            cnv = P.unique_cnv.get(k1,[])
+            cnv = P.exome_unique_cnv.get(k1,[])
 
             # dominant?
             rare_variants = []
             for v in v1['variants']:
                 bad = 0
                 for p in relatives_P:
-                    this_v = [z['cleaned_id'] for z in p.rare_snp_genes.get(k1,{'variants':[]})['variants']]
+                    this_v = [z['cleaned_id'] for z in p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']]
                     # affected/unaffected relatives have it?
                     if p.mysql['Affected'] != P.mysql['Affected'] and v['cleaned_id'] in this_v:
                         bad = 1
@@ -978,7 +1011,7 @@ class report:
             for c in cnv:
                 bad = 0
                 for p in relatives_P:
-                    this_c = [z['id'] for z in p.unique_cnv.get(k1,[])]
+                    this_c = [z['id'] for z in p.exome_unique_cnv.get(k1,[])]
                     if p.mysql['Affected'] != P.mysql['Affected'] and z['id'] in this_c:
                         bad = 1
                         break
@@ -1041,7 +1074,7 @@ class report:
 
             # intersect with affected
             for p in [i for i in relatives_P if i.mysql['Affected'] == P.mysql['Affected']]:
-                this_rare_id = [j['cleaned_id'] for j in p.rare_snp_genes.get(k1,{'variants':[]})['variants']] + [j['id'] for j in p.unique_cnv.get(k1,[])]
+                this_rare_id = [j['cleaned_id'] for j in p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']] + [j['id'] for j in p.exome_unique_cnv.get(k1,[])]
                 rare_ids = rare_ids & set(this_rare_id)
             # more than 2? hom * 2 + het * 1. count cnvs as hom based on options['cnv']
             count = (len([i for i in rare_variants if i['cleaned_id'] in rare_ids and i['genotype'] == 'hom']) + len([i for i in rare_cnv if i['id'] in rare_ids and i['genotype'] == 'hom'])) * 2 + len([i for i in rare_variants if i['cleaned_id'] in rare_ids and i['genotype'] == 'het']) + len([i for i in rare_cnv if i['id'] in rare_ids and i['genotype'] == 'het'])
@@ -1061,8 +1094,8 @@ class report:
                     combo = combinations(sorted(rare_ids),2)
                     relatives_combo = []
                     for p in unaffected:
-                        pv = p.rare_snp_genes.get(k1,{'variants':[]})['variants']
-                        pc = p.unique_cnv.get(k1,[])
+                        pv = p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']
+                        pc = p.exome_unique_cnv.get(k1,[])
                         ids = []
                         for i in pv+pc:
                             if i['id'] in rare_ids:
