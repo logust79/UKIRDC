@@ -97,7 +97,7 @@ def _check_add_hpo(hpo, hpos):
         add_flag = 0
         for i in hpo_ids:
             H = HPO.Hpo(i,sqlite3.connect('irdc.db'))
-            if 'HP:0000510' in H.ancestors:
+            if hpo['id'] in H.ancestors:
                 add_flag = 1
                 break
         if add_flag:
