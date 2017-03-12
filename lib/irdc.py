@@ -11,6 +11,7 @@ sys.path.append('../../BioTools')
 import Variants
 import Genes
 import HPO
+import Compare
 import mysql.connector
 import pymongo
 import sqlite_utils
@@ -22,7 +23,9 @@ from itertools import combinations
 from urllib2 import HTTPError, URLError
 from Bio import Entrez
 import pandas as pd
+import numpy as np
 import xlsxwriter as xw
+from fields_update_methods import field_helpers
 
 '''
 globals
@@ -96,7 +99,7 @@ def _check_add_hpo(hpo, hpos):
     if hpo['id'] not in hpo_ids:
         add_flag = 0
         for i in hpo_ids:
-            H = HPO.Hpo(i,sqlite3.connect('irdc.db'))
+            H = HPO.Hpo(sqlite3.connect('irdc.db'),i)
             if hpo['id'] in H.ancestors:
                 add_flag = 1
                 break
@@ -164,21 +167,42 @@ def parse_pos(id,type):
 '''
 format excel
 '''
-def format_excel(a,writer):
+def format_excel(a,writer,changes,rules):
     """ Add Excel specific formatting to the workbook
     """
     # Get the workbook and the sheets so we can add the formatting
     workbook = writer.book
     # format wrap
     wrap_fmt = workbook.add_format({'text_wrap': True})
+    rule_fmt = {k:workbook.add_format(v) for k,v in rules.items()}
     
     # format each sheet
     for sheet in a:
         header = list(a[sheet])
         worksheet = writer.sheets[sheet]
         shape = a[sheet].shape
-        # wrap variants, pubmed
-        if sheet not in ['notes','relatives']:
+        # highlight changes, wrap variants, pubmed
+        if sheet in ['recessive','dominant','X']:
+            
+            # changes highlight, highlight first cell and changed cell
+            if changes:
+                for k1,v1 in changes[sheet].items():
+                    if k1 == '<>':
+                        for k2,v2 in v1.items():
+                            row_ind = np.where(a[sheet]['gene_id'] == k2)[0][0]
+                            cols = v2['change'].keys()
+                            col_inds = [0] + [header.index(i) for i in cols]
+                            for i in col_inds:
+                                cell_value = a[sheet].get_value(row_ind,header[i])
+                                worksheet.write(row_ind+1, i, cell_value, rule_fmt[k1])
+                    else:
+                        if not v1: continue
+                        row_inds = a[sheet][a[sheet]['gene_id'].isin(v1)].index.tolist()
+                        for i in row_inds:
+                            cell_value = a[sheet].get_value(row_ind,header[0])
+                            worksheet.write(i+1, 0, cell_value, rule_fmt[k1])
+        
+            # columns highlight
             variant_index = header.index('variants')
             v_col = xw.utility.xl_col_to_name(variant_index)
             pubmed_index = header.index('pubmed')
@@ -189,7 +213,7 @@ def format_excel(a,writer):
             worksheet.set_column(':'.join([p_col,p_col]),10, wrap_fmt)
             worksheet.set_column(':'.join([pr_col,pr_col]),10, wrap_fmt)
             
-            # add table
+            # add table. uncomment if necessary
             '''
             this_header = [{'header': di} for di in a[sheet].columns.tolist()]
             cell_range = xw.utility.xl_range(0,0,shape[0],shape[1])
@@ -202,10 +226,16 @@ def format_excel(a,writer):
 '''
 write data to excel
 '''
-def write_to_excel(a,f,ped_loc=False):
+def write_to_excel(a,f,ped_loc,changes,rules):
+    #f = '../analysis_data/test/result.xlsx'
     writer = pd.ExcelWriter(f,engine='xlsxwriter')
-    for k in ['recessive','dominant','X','relatives']:
-        a[k].to_excel(writer,sheet_name=k,index=False)
+    for k in ['recessive','dominant','X','relatives','history']:
+        if k == 'history':
+            if k in a:
+                print(a[k].index.names)
+                a[k].to_excel(writer,sheet_name=k)
+        else:
+            a[k].to_excel(writer,sheet_name=k,index=False)
     # write notes. first transpose, then add pedigree figure if available
     a['notes'].transpose().to_excel(writer,sheet_name='notes',header=False)
     
@@ -214,7 +244,7 @@ def write_to_excel(a,f,ped_loc=False):
         worksheet = writer.sheets['notes']
         worksheet.insert_image('D1',ped_loc)
     
-    format_excel(a,writer)
+    format_excel(a,writer,changes,rules)
     writer.save()
 
 '''
@@ -759,6 +789,28 @@ class report:
         self.G = G
         # relatives are done together with probands. push them here to avoid repetitive calculation
         self.done = []
+    
+    '''
+    fields update rules
+    '''
+    @property
+    def field_rules(self):
+        if getattr(self, '_field_rules', None) is None:
+            fields_to_check = self.options['fields_to_check']['fields']
+            # fields_update_methods have some predefined helpers
+            
+            # populate missing fields in field_helpers with method None
+            field_rules = {}
+            for i in fields_to_check:
+                field_rules[i] = field_helpers.get(i, None)
+
+            # make exac / kaviar / pubmedscore / pLI methods
+            for i in ['exac_af', 'exac_hom_af', 'kaviar_af', 'pubmed_score', 'pLI']:
+                if i not in fields_to_check: continue
+                field_rules[i] = field_helpers[i](fields_to_check[i])
+            self._field_rules = field_rules
+        return self._field_rules
+        
     '''
     known lists
     translate symbols to ensembl ids
@@ -835,7 +887,44 @@ class report:
                 export['notes'] = pd.DataFrame(notes)
                 # write to excel
                 f = os.path.join(self.options['output_dir'],r+'.xlsx')
-                write_to_excel(export,f,ped_loc)
+                # now need to check if target excel file exists.
+                # if yes, compare and highlight.
+                # if no, write
+                changes = {}
+                if os.path.isfile(f):
+                    # add change message
+                    msg = 'comparing with old file to highlight changes'
+                    print(msg)
+                    excel_data = pd.ExcelFile(f)
+                    # multiple index for time and msg
+                    now = time.strftime('%Y-%m-%d %H:%M')
+                    for sheet in ['recessive','dominant','X']:
+                        old_df = excel_data.parse(sheet)
+                        changes[sheet] = Compare.compare_dfs(
+                            df1 = old_df,
+                            df2 = export[sheet],
+                            key = 'gene_id',
+                            fields = self.field_rules,
+                        )
+                        # add deleted rows back to new df
+                        headers = list(export[sheet])
+                        export[sheet] = export[sheet].append(old_df[old_df['gene_id'].isin(changes[sheet]['-'])])[headers].reset_index(drop=True)
+                    
+                    # history df. first make dict, then convert to df, then merge with old history
+                    history_df = {}
+                    for k1,v1 in changes.items():
+                        history_df[k1] = {}
+                        for k2,v2 in v1.items():
+                            if type(v2) is set: v2 = list(v2)
+                            history_df[k1][(now,self.options['message'],k2)] = json.dumps(v2,indent=4)
+                    history_df = pd.DataFrame.from_dict(history_df)
+                    history_df.index.names = ['time','message','change']
+                    if 'history' in excel_data.sheet_names:
+                        old_history = excel_data.parse('history')
+                        history_df = history_df.append(old_history)
+                    export['history'] = history_df
+                    
+                write_to_excel(export,f,ped_loc,changes,self.options['highlight_rules'])
         # write bad genes
         outf = open(self.options['bad_genes'],'w')
         outf.write(' '.join(set(self.G._bad_genes)))
