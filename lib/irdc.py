@@ -952,9 +952,7 @@ class report:
                     history_df.index.names = ['time','message','change']
                     if 'history' in excel_data.sheet_names:
                         old_history = excel_data.parse('history',index_col=[0,1,2])
-                        #history_df = history_df.append(old_history)
-                        history_df = pd.concat([history_df,old_history])
-                        print(old_history)
+                        history_df = history_df.append(old_history)
                     export['history'] = history_df
                     
                 write_to_excel(export,f,ped_loc,changes,self.options['highlight_rules'])
