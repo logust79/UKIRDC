@@ -116,12 +116,34 @@ def parse_exac(exac, hom=False):
         if not hom:
             return exac['variant']['allele_freq']
         else:
-            return float(exac['variant']['hom_count']) / (sum(exac['variant']['pop_ans'].values()) * 2 or 1)
+            return float(exac['variant']['hom_count']) / (sum(exac['variant']['pop_ans'].values()) / 2 or 1)
     if exac['base_coverage'] and exac['base_coverage'][0]['has_coverage']:
         # is covered but not exsits on exac
         return 0
     # not covered
     return None
+
+'''
+parse gnomad info. merge exome and genome
+'''
+def parse_gnomad(gnomad, hom=False):
+    result = None
+    total_an = 0
+    for mode in ['genomes','exomes']:
+        if gnomad[mode]['any_covered']:
+            result = result or 0
+            if not gnomad[mode]['data']:
+                continue
+            total_an += gnomad[mode]['data'][0]['an']
+            if hom:
+                result += gnomad[mode]['data'][0]['hom'] * 2
+            else:
+                result += gnomad[mode]['data'][0]['ac']
+    # not covered
+    if not result:
+        return result
+    else:
+        return float(result) / total_an
 
 '''
 parse protein atlas, given tissue
@@ -199,7 +221,7 @@ def format_excel(a,writer,changes,rules):
                         if not v1: continue
                         row_inds = a[sheet][a[sheet]['gene_id'].isin(v1)].index.tolist()
                         for i in row_inds:
-                            cell_value = a[sheet].get_value(row_ind,header[0])
+                            cell_value = a[sheet].get_value(i,header[0])
                             worksheet.write(i+1, 0, cell_value, rule_fmt[k1])
         
             # columns highlight
@@ -232,7 +254,7 @@ def write_to_excel(a,f,ped_loc,changes,rules):
     for k in ['recessive','dominant','X','relatives','history']:
         if k == 'history':
             if k in a:
-                print(a[k].index.names)
+                print(a[k])
                 a[k].to_excel(writer,sheet_name=k)
         else:
             a[k].to_excel(writer,sheet_name=k,index=False)
@@ -257,9 +279,9 @@ def make_df(a):
         # make header
         if k in ['known','hpos']: continue
         if k in ['recessive','dominant','X']:
-            header = ['symbol','retnet','pubmed_score','pubmed','protein_atlas','variants','consequence','filter','exac_af','kaviar_af','cadd_phred','cnvs','igv_check','gene_id','original_gene_id']
+            header = ['symbol','retnet','pubmed_score','pubmed','protein_atlas','variants','consequence','filter','gnomad_af','kaviar_af','cadd_phred','cnvs','igv_check','gene_id','original_gene_id']
             if k == 'recessive':
-                header = header[:7]+['exac_hom_af']+header[7:]
+                header = header[:7]+['gnomad_hom_af']+header[7:]
             else:
                 header = header[:4]+['pLI']+header[4:]
             # add knowns
@@ -303,19 +325,19 @@ def make_array(h,v):
         for i in v:
             this = ['%(cleaned_id)s:%(genotype)s:%(AAChange)s' % j for j in i[h]]
             ary.append(', '.join(this))
-    elif h in ['filter','consequence','exac_af','kaviar_af','exac_hom_af','cadd_phred']:
+    elif h in ['filter','consequence','gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
         for i in v:
             this = [str(j[h]) for j in i['variants']]
             ary.append(', '.join(this))
     elif h == 'cnvs':
         for i in v:
-            this = ['%(id)s:%(type)s:reads_observed:%(reads_observed)s:reawds_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % j for j in i['cnv']]
+            this = ['%(id)s:%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % j for j in i['cnv']]
             ary.append(', '.join(this))
     elif h in ['Name','project_associated_id','Affected','role']:
-        for k,v in v.iteritems():
+        for k,v in v.items():
             ary.append(v[h])
     elif h == 'HPO':
-        for k,v in v.iteritems():
+        for k,v in v.items():
             this = ['%(name)s(%(id)s)' % j for j in v[h]]
             ary.append(', '.join(this))
     elif '(' in h:
@@ -480,9 +502,9 @@ class IRDC_variant(Variants.Variant):
         self.most_severe_consequence = None
 
 class IRDC_variants(Variants.Variants):
-    def __init__(self,variant_ids,db_conn=sqlite3.connect('irdc.db')):
+    def __init__(self,variant_ids,db_conn=sqlite3.connect('irdc.db'),varsome_key=None):
         db_conn.text_factory = str
-        Variants.Variants.__init__(self,db_conn,variant_ids)
+        Variants.Variants.__init__(self,db_conn,variant_ids,varsome_key=varsome_key)
 
 class IRDC_gene(Genes.Gene):
     '''
@@ -517,7 +539,7 @@ class Patient:
         self.options = options
         self.relatives = {}
         self.exome_rare_file_path = os.path.join(options['irdc_exome_folder'],'combinedAnalysis/point_mutations/latest/rare_variants')
-        self.exome_cnv_file_path = os.path.join(options['irdc_exome_folder'],'combinedAnalysis/CNV')
+        self.exome_cnv_file_path = options['irdc_exome_cnv_folder']
         self.wgs_rare_file_path = options['irdc_wgs_folder']
         self.G = G # a shared IRDC_genes object, to help translate symbols
         self.known = known
@@ -588,7 +610,7 @@ class Patient:
                 genotype
                 filter
                 consequence
-                exac
+                gnomad
                 kaviar
                 cadd
                 het_p:[who,who,who]
@@ -649,17 +671,17 @@ class Patient:
                     'AAChange':row['AAChange'],
                 })
         # annotate variants
-        V = IRDC_variants(variants)
+        V = IRDC_variants(variants,varsome_key=self.options['varsome_API_key'])
         V.cadd_file = self.options['cadd_file']
         kaviars = V.kaviar_af
-        exacs = V.exac
+        gnomads = V.gnomad
         cadd = V.cadd_phred
         cleaned = V.cleaned_variants
         for k,v in result.iteritems():
             for i in v['variants']:
                 i['cleaned_id'] = cleaned[i['variant_id']]
                 i['id'] = i['cleaned_id']
-                i['exac'] = exacs[i['variant_id']]
+                i['gnomad'] = gnomads[i['variant_id']]
                 i['cadd_phred'] = cadd[i['variant_id']]
                 i['kaviar_af'] = kaviars[i['variant_id']]
         return result
@@ -677,71 +699,69 @@ class Patient:
         genes:[]
     ]
     '''
-    def _get_exome_cnv(self, file):
-        result = []
-        inf = open(file,'r')
-        header = []
-        genes = []
-        for row in inf:
-            row = row.rstrip().split('\t')
-            if not header:
-                header = row
-                continue
-            row = _make_dict(row,header)
-            # collect symbols for later translation
-            symbols = row['genePos_hg19.tab'].split(',')
-            genes.extend(symbols)
-            result.append({
-                'id'            :row['id'],
-                'chrom'         :row['chromosome'],
-                'start'         :int(row['start']),
-                'end'           :int(row['end']),
-                'reads_observed':row['reads.observed'],
-                'reads_expected':row['reads.expected'],
-                'ratio'         :row['reads.ratio'],
-                'type'          :row['type'],
-                'symbols'       :symbols,
-                'genotype'      :'het' if self.options['cnv']['lower_ratio'] < float(row['reads.ratio']) < self.options['cnv']['upper_ratio'] else 'hom',
-            })
-        # translate symbols to ensembl ids
-        ensembls = self.G.symbols_to_ensemblIds(genes)
-        # populate genes to result
-        for i in result:
-            i['genes'] = [ensembls[j] for j in i['symbols'] if j in ensembls]
-        return result
+    def _get_exome_cnv(self):
+        # find relatives (it doesn't matter if they are affected)
+        relatives = []
+        if self.relatives:
+            relatives = [v['project_associated_id'] for k,v in self.relatives.items()]
+        # add itself
+        relatives.append(self.irdc_id)
+        relatives = set(relatives)
+        # find batch number
+        batch_no = self.irdc_id.split('_')[1]
+        proband_df = pd.DataFrame()
+        all_df = pd.DataFrame()
+        # merge everything into a big df
+        for folder in [i for i in os.listdir(self.exome_cnv_file_path) if 'batch' in i]:
+            # if in the right folder? if not, append to all_df. if yes, store proband related cnvs in df, else in all_df
+            if folder == batch_no:
+                bingo = True
+            else:
+                bingo = False
+            for file in os.listdir(os.path.join(self.exome_cnv_file_path,folder)):
+                if not file.endswith('.csv'): continue
+                f = os.path.join(self.exome_cnv_file_path,folder,file)
+                # batch1 has strange ids. (not start with IRDC) remove them.
+                this_df = pd.read_csv(f)
+                this_df = this_df[this_df.apply(lambda x:x['sample'].startswith('IRDC'), axis=1)]
+                # normalise this_df's sample field
+                this_df['sample'] = this_df['sample'].apply(lambda x: x[:-18])
+                g = this_df.groupby('id')['sample'].apply(list)
+                
+                # don't change this iteritems!!! this is a pandas series
+                # all_df
+                good_key = []
+                for k,v in g.iteritems():
+                    if len(set(v) - relatives) == 1:
+                        good_key.append(k)
+            
+                all_df = all_df.append( this_df[this_df['id'].isin(good_key)] )
+                # remove rows with not-unique ids (if not only duplicated in relatives), or not belong to proband
+                if bingo:
+                    good_key = []
+                    for k,v in g.iteritems():
+                        if not (set(v) - relatives):
+                            good_key.append(k)
+                    print('good_key',good_key)
+                    this_df = this_df[this_df['id'].isin(good_key)]
+                    proband_df = proband_df.append(this_df)
+        all_df = all_df.reset_index(drop=True)
+        proband_df = proband_df.reset_index(drop=True)
+        return proband_df, all_df
     
     '''
+    NOT FINISHED!!!!
     get unique cnv (excluding relatives)
+    unique is 'batch' unique. 
+    will also look for patients with overlapping cnvs
     '''
     @property
     def exome_unique_cnv(self):
         if getattr(self, '_exome_unique_cnv', None) is None:
-            # find relatives (it doesn't matter if they are affected)
-            relatives = []
-            if self.relatives:
-                relatives = ['_'.join(v['project_associated_id'].split('_')[2:]) for k,v in self.relatives.iteritems()]
-            # add itself
-            relatives.append(self.irdc_id)
-            # find all the cnv files and cnv_X files
             result = []
-            cnv_files = []
-            cnv_X_files = []
-            # the most recent batches are of different format. ignore those
-            bad_batches = ['IRDC_batch7','IRDC_batch8','IRDC_batch9']
-            for folder in [i for i in os.listdir(self.exome_cnv_file_path) if 'batch' in i and i not in bad_batches]:
-                for file in os.listdir(os.path.join(self.exome_cnv_file_path,folder,'multi_exons')):
-                    # relative?
-                    flag = 0
-                    for j in relatives:
-                        if j in file:
-                            flag = 1
-                    if flag == 1: continue
+            proband_df, all_df = self._get_exome_cnv()
+            sys.exit()
                     
-                    f = os.path.join(self.exome_cnv_file_path,folder,'multi_exons',file)
-                    if 'bam.cnv' in file:
-                        cnv_files.append(f)
-                    elif 'bam_X.cnv' in file:
-                        cnv_X_files.append(f)
         
             for i in self.exome_cnv:
                 # search all the files
@@ -804,8 +824,8 @@ class report:
             for i in fields_to_check:
                 field_rules[i] = field_helpers.get(i, None)
 
-            # make exac / kaviar / pubmedscore / pLI methods
-            for i in ['exac_af', 'exac_hom_af', 'kaviar_af', 'pubmed_score', 'pLI']:
+            # make gnomad / kaviar / pubmedscore / pLI methods
+            for i in ['gnomad_af', 'gnomad_hom_af', 'kaviar_af', 'pubmed_score', 'pLI']:
                 if i not in fields_to_check: continue
                 field_rules[i] = field_helpers[i](fields_to_check[i])
             self._field_rules = field_rules
@@ -910,6 +930,17 @@ class report:
                         headers = list(export[sheet])
                         export[sheet] = export[sheet].append(old_df[old_df['gene_id'].isin(changes[sheet]['-'])])[headers].reset_index(drop=True)
                     
+                        # and add non-overlapping column back. this is clumsy. should have a better way to do this
+                        added_columns = set(list(old_df)) - set(list(export[sheet]))
+                        for a in added_columns:
+                            this_list = []
+                            for g in list(export[sheet]['gene_id']):
+                                if g not in list(old_df['gene_id']):
+                                    this_list.append(None)
+                                else:
+                                    this_list.append(list(old_df[old_df['gene_id'] == g][a])[0])
+                            export[sheet][a] = this_list
+                        
                     # history df. first make dict, then convert to df, then merge with old history
                     history_df = {}
                     for k1,v1 in changes.items():
@@ -920,8 +951,10 @@ class report:
                     history_df = pd.DataFrame.from_dict(history_df)
                     history_df.index.names = ['time','message','change']
                     if 'history' in excel_data.sheet_names:
-                        old_history = excel_data.parse('history')
-                        history_df = history_df.append(old_history)
+                        old_history = excel_data.parse('history',index_col=[0,1,2])
+                        #history_df = history_df.append(old_history)
+                        history_df = pd.concat([history_df,old_history])
+                        print(old_history)
                     export['history'] = history_df
                     
                 write_to_excel(export,f,ped_loc,changes,self.options['highlight_rules'])
@@ -942,8 +975,8 @@ class report:
     result = {
         //family_history: this will be added when writing to excel
         relatives:{}
-        dominant:[{recessive + pLI - exac_hom_af}]
-        X:[{recessive + pLI - exac_hom_af}]
+        dominant:[{recessive + pLI - gnomad_hom_af}]
+        X:[{recessive + pLI - gnomad_hom_af}]
         recessive:[{
             gene_id:
             symbol:
@@ -961,8 +994,8 @@ class report:
                 consequence:
                 filter:
                 genotype:
-                exac_hom_af:
-                exac_af:
+                gnomad_hom_af:
+                gnomad_af:
                 kaviar_af:
                 cadd_phred:
             }]
@@ -986,7 +1019,11 @@ class report:
         # make P of relatives
         relatives_P = [Patient(i, self.options, self.G) for i in P.relatives]
         # extract all genes and push them to GENES. Note that G is only for translation
-        GENES = IRDC_genes(P.exome_rare_snp_genes.keys() + P.exome_unique_cnv.keys())
+        if self.options['cnv']['switch']:
+            exome_unique_cnv = P.exome_unique_cnv
+        else:
+            exome_unique_cnv = {}
+        GENES = IRDC_genes(P.exome_rare_snp_genes.keys() + exome_unique_cnv.keys())
         GENES._bad_genes = self.G._bad_genes
         #G._bad_genes.extend(GENES._bad_genes)
         # hpos
@@ -1074,7 +1111,7 @@ class report:
             this['retnet'] = P.retnet.get(k1,{})
 
             # check which group it belongs
-            cnv = P.exome_unique_cnv.get(k1,[])
+            cnv = exome_unique_cnv.get(k1,[])
 
             # dominant?
             rare_variants = []
@@ -1090,17 +1127,17 @@ class report:
                         bad = 1
                         break
                 if bad: continue
-                # exac?
-                v['exac_af'] = parse_exac(v['exac'])
-                if v['exac_af'] != None and v['exac_af'] <= self.options['cut_offs'][onset]['exac']:
+                # gnomad?
+                v['gnomad_af'] = parse_gnomad(v['gnomad'])
+                if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
                     rare_variants.append(v)
-                elif v['exac_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
+                elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
                     rare_variants.append(v)
             rare_cnv = []
             for c in cnv:
                 bad = 0
                 for p in relatives_P:
-                    this_c = [z['id'] for z in p.exome_unique_cnv.get(k1,[])]
+                    this_c = [z['id'] for z in exome_unique_cnv.get(k1,[])]
                     if p.mysql['Affected'] != P.mysql['Affected'] and z['id'] in this_c:
                         bad = 1
                         break
@@ -1154,16 +1191,16 @@ class report:
             rare_variants = []
             # rare_cnv remains the same
             for v in v1['variants']:
-                # exac hom? not check kaviar since it doesnt have hom af
-                v['exac_af'] = parse_exac(v['exac'])
-                v['exac_hom_af'] = parse_exac(v['exac'],hom=True)
-                if v['exac_hom_af'] == None or v['exac_hom_af'] <= self.options['cut_offs'][onset]['exac']:
+                # gnomad hom? not check kaviar since it doesnt have hom af
+                v['gnomad_af'] = parse_gnomad(v['gnomad'])
+                v['gnomad_hom_af'] = parse_gnomad(v['gnomad'],hom=True)
+                if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
                     rare_variants.append(v)
             rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in cnv])
 
             # intersect with affected
             for p in [i for i in relatives_P if i.mysql['Affected'] == P.mysql['Affected']]:
-                this_rare_id = [j['cleaned_id'] for j in p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']] + [j['id'] for j in p.exome_unique_cnv.get(k1,[])]
+                this_rare_id = [j['cleaned_id'] for j in p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']] + [j['id'] for j in exome_unique_cnv.get(k1,[])]
                 rare_ids = rare_ids & set(this_rare_id)
             # more than 2? hom * 2 + het * 1. count cnvs as hom based on options['cnv']
             count = (len([i for i in rare_variants if i['cleaned_id'] in rare_ids and i['genotype'] == 'hom']) + len([i for i in rare_cnv if i['id'] in rare_ids and i['genotype'] == 'hom'])) * 2 + len([i for i in rare_variants if i['cleaned_id'] in rare_ids and i['genotype'] == 'het']) + len([i for i in rare_cnv if i['id'] in rare_ids and i['genotype'] == 'het'])
@@ -1184,7 +1221,7 @@ class report:
                     relatives_combo = []
                     for p in unaffected:
                         pv = p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']
-                        pc = p.exome_unique_cnv.get(k1,[])
+                        pc = exome_unique_cnv.get(k1,[])
                         ids = []
                         for i in pv+pc:
                             if i['id'] in rare_ids:
@@ -1203,7 +1240,7 @@ class report:
                 # add variants, only the good ones
                 r_this['variants'] = [i for i in rare_variants if i['cleaned_id'] in rare_ids]
                 for i in r_this['variants']:
-                    i['exac'] = None
+                    i['gnomad'] = None
                 r_this['cnv'] = [ i for i in rare_cnv if i['id'] in rare_ids]
                 
                 # any of the variants are close together?
