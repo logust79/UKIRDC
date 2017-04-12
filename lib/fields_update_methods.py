@@ -46,39 +46,21 @@ def pubmed_score_field_helper_factory(fold):
     return inner_cb
 
 '''
-variants, simply check variant ids
-'''
-def variants_field_helper(A,B):
-    def parse_variants(x):
-        return {i.split(':')[0] for i in x.split(', ')}
-    
-    if parse_variants(A) == parse_variants(B):
-        return False
-    else:
-        return True
-
-'''
-exac / kaviar
+gnomad / kaviar
 '''
 def ek_field_helper_factory(cutoff):
     # there might be a ',' in the cell
-    def parse(x):
-        return [float(i) for i in x.split(', ')]
     def inner_cb(A,B):
-        # convert to string
-        A,B = str(A), str(B)
+        # convert np.nan to None
+        A,B = nan_to_([float(A),float(B)],0)
         # equal?
         if A == B:
             return False
         
-        A,B = parse(A), parse(B)
-        if len(A) != len(B):
-            return True
-        for a,b in zip(A,B):
-            # one > thrd, one < thrd?
-            if sorted([a,b,cutoff])[1] == cutoff: return True
-            # both < thrd?
-            if max(a,b,cutoff) == cutoff: return True
+        # one > thrd, one < thrd?
+        if sorted([A,B,cutoff])[1] == cutoff: return True
+        # both < thrd and big difference?
+        if max(A,B,cutoff) == cutoff and max(A/B,B/A) >= 2: return True
         return False
 
     return inner_cb
@@ -121,7 +103,6 @@ def pLI_field_helper_factory(change):
 field_helpers = {
     'retnet': retnet_field_helper,
     'pubmed_score': pubmed_score_field_helper_factory,
-    'variants': variants_field_helper,
     'gnomad_hom_af': ek_field_helper_factory,
     'gnomad_af': ek_field_helper_factory,
     'kaviar_af': ek_field_helper_factory,

@@ -211,21 +211,23 @@ def format_excel(a,writer,changes,rules):
                 for k1,v1 in changes[sheet].items():
                     if k1 == '<>':
                         for k2,v2 in v1.items():
-                            row_ind = np.where(a[sheet]['gene_id'] == k2)[0][0]
+                            row_ind = np.where(a[sheet]['variant'] == k2)[0][0]
                             cols = v2['change'].keys()
                             col_inds = [0] + [header.index(i) for i in cols]
                             for i in col_inds:
                                 cell_value = a[sheet].get_value(row_ind,header[i])
+                                if pd.isnull(cell_value):
+                                    cell_value = None
                                 worksheet.write(row_ind+1, i, cell_value, rule_fmt[k1])
                     else:
                         if not v1: continue
-                        row_inds = a[sheet][a[sheet]['gene_id'].isin(v1)].index.tolist()
+                        row_inds = a[sheet][a[sheet]['variant'].isin(v1)].index.tolist()
                         for i in row_inds:
                             cell_value = a[sheet].get_value(i,header[0])
                             worksheet.write(i+1, 0, cell_value, rule_fmt[k1])
         
             # columns highlight
-            variant_index = header.index('variants')
+            variant_index = header.index('variant')
             v_col = xw.utility.xl_col_to_name(variant_index)
             pubmed_index = header.index('pubmed')
             p_col = xw.utility.xl_col_to_name(pubmed_index)
@@ -254,7 +256,6 @@ def write_to_excel(a,f,ped_loc,changes,rules):
     for k in ['recessive','dominant','X','relatives','history']:
         if k == 'history':
             if k in a:
-                print(a[k])
                 a[k].to_excel(writer,sheet_name=k)
         else:
             a[k].to_excel(writer,sheet_name=k,index=False)
@@ -275,17 +276,18 @@ make pandas dataframe
 def make_df(a):
     result = {'recessive':{},'dominant':{},'X':{},'relatives':{}}
     H = {}
-    for k,v in a.iteritems():
+    for k,v in a.items():
         # make header
         if k in ['known','hpos']: continue
         if k in ['recessive','dominant','X']:
-            header = ['symbol','retnet','pubmed_score','pubmed','protein_atlas','variants','consequence','filter','gnomad_af','kaviar_af','cadd_phred','cnvs','igv_check','gene_id','original_gene_id']
+
+            header = ['symbol','description','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster','gene_id','original_gene_id','cnv_related']
             if k == 'recessive':
-                header = header[:7]+['gnomad_hom_af']+header[7:]
+                header = header[:12]+['gnomad_hom_af']+header[12:]
             else:
-                header = header[:4]+['pLI']+header[4:]
+                header = header[:6]+['pLI']+header[6:]
             # add knowns
-            header = header[:2] + a['known'] + header[2:]
+            header = header[:4] + a['known'] + header[4:]
             # add hpos
             header = header + ['%(name)s(%(id)s)' % i for i in a['hpos']]
         elif k == 'relatives':
@@ -310,25 +312,44 @@ def make_array(h,v):
     ary = []
     if h == 'retnet':
         for i in v:
+            size = len(i['variants'])
             if i['retnet']:
-                ary.append( 'mode:%(mode)s, disease:%(disease)s' % i[h] )
+                ary.extend( ['mode:%(mode)s, disease:%(disease)s' % i[h]] * size )
             else:
-                ary.append(None)
+                ary.extend([None] * size)
     elif h == 'pubmed':
-        ary = [', '.join(i['pubmed']) for i in v]
+        for i in v:
+            size = len(i['variants'])
+            ary.extend([', '.join(i['pubmed'])] * size)
     elif h == 'protein_atlas':
         for i in v:
-            if i[h]: ary.append('; '.join(['[cell type: %(cell_type)s, level:%(level)s, reliability: %(reliability)s]' % j for j in i[h]]))
-            else: ary.append(None)
-    elif h == 'variants':
-        # v_id1:cleaned_id:genotype:AAChange,v_id1..
+            size = len(i['variants'])
+            if i[h]:
+                ary.extend(['; '.join(['[cell type: %(cell_type)s, level:%(level)s, reliability: %(reliability)s]' % j for j in i[h]])] * size)
+            else: ary.extend([None] * size)
+    elif h == 'variant':
+        # cleaned_id or cnv
         for i in v:
-            this = ['%(cleaned_id)s:%(genotype)s:%(AAChange)s' % j for j in i[h]]
-            ary.append(', '.join(this))
-    elif h in ['filter','consequence','gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
+            for variant in i['variants']:
+                if variant['type'] == 'variant':
+                    ary.append(variant['cleaned_id'])
+                else:
+                    ary.append(variant['id'])
+    elif h in ['filter','description','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
         for i in v:
-            this = [str(j[h]) for j in i['variants']]
-            ary.append(', '.join(this))
+            for variant in i['variants']:
+                if variant['type'] == 'variant':
+                    ary.append(variant[h])
+                else:
+                    ary.append(None)
+    elif h == 'cnv_related':
+        for i in v:
+            for variant in i['variants']:
+                if variant['type'] == 'cnv':
+                    ary.append('%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % variant)
+                else:
+                    ary.append(None)
+    # will remove cnvs
     elif h == 'cnvs':
         for i in v:
             this = ['%(id)s:%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % j for j in i['cnv']]
@@ -344,10 +365,13 @@ def make_array(h,v):
         # phenogenon
         id = h.split('(')[1][:-1]
         for i in v:
+            size = len(i['variants'])
             this = [j['p_value'] for j in i['hpos'] if j['id'] == id][0]
-            ary.append(this)
+            ary.extend([this] * size)
     else:
-        ary = [i[h] for i in v]
+        for i in v:
+            size = len(i['variants'])
+            ary.extend([i[h]] * size)
     return ary
 
 '''
@@ -538,7 +562,7 @@ class Patient:
         self.id = id
         self.options = options
         self.relatives = {}
-        self.exome_rare_file_path = os.path.join(options['irdc_exome_folder'],'combinedAnalysis/point_mutations/latest/rare_variants')
+        self.exome_rare_file_path = os.path.join(options['irdc_exome_folder'],'rare_variants')
         self.exome_cnv_file_path = options['irdc_exome_cnv_folder']
         self.wgs_rare_file_path = options['irdc_wgs_folder']
         self.G = G # a shared IRDC_genes object, to help translate symbols
@@ -663,12 +687,25 @@ class Patient:
             gene_ids = set(gene_ids)
             for g in gene_ids:
                 result[g] = result.get(g,{'variants':[],'original_symbol':original_symbol})
+                transcript = Cchange = Pchange = None
+                if row['AAChange']:
+                    temp = row['AAChange'].split(',')[0].split(':')
+                    _,transcript,_,Cchange,Pchange = temp + [None] * (5 - len(temp))
                 result[g]['variants'].append({
+                    'type':'variant', # or cnv
                     'variant_id':v_id,
                     'genotype':'hom' if genotype[0] == '1' and genotype[2] == '1' else 'het',
                     'filter':row['FILTER'],
+                    'dbSNP137':row['dbSNP137'],
                     'consequence':row['ExonicFunc'] or row['Func'],
-                    'AAChange':row['AAChange'],
+                    'description':row['Description'],
+                    'LJB_PolyPhen2':row['LJB_PolyPhen2'],
+                    'LJB_SIFT':row['LJB_SIFT'],
+                    'LJB_MutationTaster':row['LJB_MutationTaster'],
+                    'omim':row['Omim'],
+                    'transcript':transcript,
+                    'Cchange':Cchange,
+                    'Pchange':Pchange,
                 })
         # annotate variants
         V = IRDC_variants(variants,varsome_key=self.options['varsome_API_key'])
@@ -742,7 +779,6 @@ class Patient:
                     for k,v in g.iteritems():
                         if not (set(v) - relatives):
                             good_key.append(k)
-                    print('good_key',good_key)
                     this_df = this_df[this_df['id'].isin(good_key)]
                     proband_df = proband_df.append(this_df)
         all_df = all_df.reset_index(drop=True)
@@ -918,27 +954,34 @@ class report:
                     excel_data = pd.ExcelFile(f)
                     # multiple index for time and msg
                     now = time.strftime('%Y-%m-%d %H:%M')
+                    
+                    # get old_history
+                    old_history = pd.DataFrame()
+                    if 'history' in excel_data.sheet_names:
+                        old_history = excel_data.parse('history',index_col=[0,1,2])
                     for sheet in ['recessive','dominant','X']:
                         old_df = excel_data.parse(sheet)
+                        # remove obsolete entries
+                        old_df = old_df[~old_df['variant'].isin(json.loads(old_history.iloc[1][sheet]))]
                         changes[sheet] = Compare.compare_dfs(
                             df1 = old_df,
                             df2 = export[sheet],
-                            key = 'gene_id',
+                            key = 'variant',
                             fields = self.field_rules,
                         )
                         # add deleted rows back to new df
                         headers = list(export[sheet])
-                        export[sheet] = export[sheet].append(old_df[old_df['gene_id'].isin(changes[sheet]['-'])])[headers].reset_index(drop=True)
+                        export[sheet] = export[sheet].append(old_df[old_df['variant'].isin(changes[sheet]['-'])])[headers].reset_index(drop=True)
                     
                         # and add non-overlapping column back. this is clumsy. should have a better way to do this
                         added_columns = set(list(old_df)) - set(list(export[sheet]))
                         for a in added_columns:
                             this_list = []
-                            for g in list(export[sheet]['gene_id']):
-                                if g not in list(old_df['gene_id']):
+                            for g in list(export[sheet]['variant']):
+                                if g not in list(old_df['variant']):
                                     this_list.append(None)
                                 else:
-                                    this_list.append(list(old_df[old_df['gene_id'] == g][a])[0])
+                                    this_list.append(list(old_df[old_df['variant'] == g][a])[0])
                             export[sheet][a] = this_list
                         
                     # history df. first make dict, then convert to df, then merge with old history
@@ -950,8 +993,7 @@ class report:
                             history_df[k1][(now,self.options['message'],k2)] = json.dumps(v2,indent=4)
                     history_df = pd.DataFrame.from_dict(history_df)
                     history_df.index.names = ['time','message','change']
-                    if 'history' in excel_data.sheet_names:
-                        old_history = excel_data.parse('history',index_col=[0,1,2])
+                    if not old_history.empty:
                         history_df = history_df.append(old_history)
                     export['history'] = history_df
                     
@@ -1182,7 +1224,7 @@ class report:
                 result['dominant'].append(d_this)
                 
                 # is this an X-linked gene?
-                if GENES.genomic_pos.get(k1,{'chr':None})['chr'] == 'X':
+                if GENES.genomic_pos.get(k1,{'chr':None}).get('chr',None) == 'X':
                     result['X'].append(d_this)
 
             # recessive?
