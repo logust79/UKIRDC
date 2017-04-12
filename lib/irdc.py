@@ -684,6 +684,8 @@ class Patient:
             genotype = row[self.irdc_id]
             # some rows have retired ensembl ids. need original_symbol to work it out
             original_symbol = row['HUGO.no.splice.info']
+            # to get splicing info, need HUGO
+            hugo = row['HUGO']
             gene_ids = set(gene_ids)
             for g in gene_ids:
                 result[g] = result.get(g,{'variants':[],'original_symbol':original_symbol})
@@ -691,6 +693,9 @@ class Patient:
                 if row['AAChange']:
                     temp = row['AAChange'].split(',')[0].split(':')
                     _,transcript,_,Cchange,Pchange = temp + [None] * (5 - len(temp))
+                elif '(' in hugo:
+                    temp = hugo[hugo.find("(")+1:hugo.find(")")]
+                    transcript,_,Cchange = temp.split(',')[0].split(':')
                 result[g]['variants'].append({
                     'type':'variant', # or cnv
                     'variant_id':v_id,
@@ -841,7 +846,7 @@ class report:
         self.options = options
         G = IRDC_genes()
         # shared bad_genes
-        G._bad_genes = open(options['bad_genes'],'r').readline().split()
+        G._bad_genes = list(set(open(options['bad_genes'],'r').readline().split()))
         self.G = G
         # relatives are done together with probands. push them here to avoid repetitive calculation
         self.done = []
@@ -962,7 +967,8 @@ class report:
                     for sheet in ['recessive','dominant','X']:
                         old_df = excel_data.parse(sheet)
                         # remove obsolete entries
-                        old_df = old_df[~old_df['variant'].isin(json.loads(old_history.iloc[1][sheet]))]
+                        if not old_history.empty:
+                            old_df = old_df[~old_df['variant'].isin(json.loads(old_history.iloc[1][sheet]))]
                         changes[sheet] = Compare.compare_dfs(
                             df1 = old_df,
                             df2 = export[sheet],

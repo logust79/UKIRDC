@@ -52,6 +52,8 @@ def ek_field_helper_factory(cutoff):
     # there might be a ',' in the cell
     def inner_cb(A,B):
         # convert np.nan to None
+        try: float(A)
+        except ValueError: return True
         A,B = nan_to_([float(A),float(B)],0)
         # equal?
         if A == B:
@@ -60,7 +62,7 @@ def ek_field_helper_factory(cutoff):
         # one > thrd, one < thrd?
         if sorted([A,B,cutoff])[1] == cutoff: return True
         # both < thrd and big difference?
-        if max(A,B,cutoff) == cutoff and max(A/B,B/A) >= 2: return True
+        if max(A,B,cutoff) == cutoff and (A*B == 0 or max(A/B,B/A) >= 2): return True
         return False
 
     return inner_cb
