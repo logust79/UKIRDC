@@ -42,6 +42,16 @@ EARLY_ONSET_HPOS = [
     ]
 
 '''
+check variant has 0 as alt
+'''
+def check_variant(v):
+    alt = v.split('-')[-1]
+    if alt == '0':
+        return False
+    else:
+        return True
+
+'''
 given an array and a header, give back a dict
 '''
 def _make_dict(data,header):
@@ -1174,11 +1184,16 @@ class report:
                         break
                 if bad: continue
                 # gnomad?
-                v['gnomad_af'] = parse_gnomad(v['gnomad'])
-                if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                # first check if variant has 0
+                if not check_variant(v['cleaned_id']):
+                    v['gnomad_af'] = -1
                     rare_variants.append(v)
-                elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
-                    rare_variants.append(v)
+                else:
+                    v['gnomad_af'] = parse_gnomad(v['gnomad'])
+                    if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                        rare_variants.append(v)
+                    elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
+                        rare_variants.append(v)
             rare_cnv = []
             for c in cnv:
                 bad = 0
@@ -1238,10 +1253,15 @@ class report:
             # rare_cnv remains the same
             for v in v1['variants']:
                 # gnomad hom? not check kaviar since it doesnt have hom af
-                v['gnomad_af'] = parse_gnomad(v['gnomad'])
-                v['gnomad_hom_af'] = parse_gnomad(v['gnomad'],hom=True)
-                if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                # first check if 0 in alt
+                if not check_variant(v['cleaned_id']):
+                    v['gnomad_af'] = v['gnomad_hom_af'] = -1
                     rare_variants.append(v)
+                else:
+                    v['gnomad_af'] = parse_gnomad(v['gnomad'])
+                    v['gnomad_hom_af'] = parse_gnomad(v['gnomad'],hom=True)
+                    if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                        rare_variants.append(v)
             rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in cnv])
 
             # intersect with affected
