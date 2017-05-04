@@ -291,13 +291,13 @@ def make_df(a):
         if k in ['known','hpos']: continue
         if k in ['recessive','dominant','X']:
 
-            header = ['symbol','description','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster','gene_id','original_gene_id','cnv_related']
+            header = ['symbol','description','samples','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster','gene_id','original_gene_id','cnv_related']
             if k == 'recessive':
-                header = header[:12]+['gnomad_hom_af']+header[12:]
+                header = header[:13]+['gnomad_hom_af']+header[13:]
             else:
                 header = header[:6]+['pLI']+header[6:]
             # add knowns
-            header = header[:4] + a['known'] + header[4:]
+            header = header[:5] + a['known'] + header[5:]
             # add hpos
             header = header + ['%(name)s(%(id)s)' % i for i in a['hpos']]
         elif k == 'relatives':
@@ -345,7 +345,7 @@ def make_array(h,v):
                     ary.append(variant['cleaned_id'])
                 else:
                     ary.append(variant['id'])
-    elif h in ['filter','description','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
+    elif h in ['filter','description','samples','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
         for i in v:
             for variant in i['variants']:
                 if variant['type'] == 'variant':
@@ -721,6 +721,7 @@ class Patient:
                     'transcript':transcript,
                     'Cchange':Cchange,
                     'Pchange':Pchange,
+                    'samples':row['Samples'],
                 })
         # annotate variants
         V = IRDC_variants(variants,varsome_key=self.options['varsome_API_key'])
@@ -1255,7 +1256,8 @@ class report:
                 # gnomad hom? not check kaviar since it doesnt have hom af
                 # first check if 0 in alt
                 if not check_variant(v['cleaned_id']):
-                    v['gnomad_af'] = v['gnomad_hom_af'] = -1
+                    v['gnomad_af'] = -1
+                    v['gnomad_hom_af'] = -1
                     rare_variants.append(v)
                 else:
                     v['gnomad_af'] = parse_gnomad(v['gnomad'])
