@@ -134,28 +134,6 @@ def parse_exac(exac, hom=False):
     return None
 
 '''
-parse gnomad info. merge exome and genome
-'''
-def parse_gnomad(gnomad, hom=False):
-    result = None
-    total_an = 0
-    for mode in ['genomes','exomes']:
-        if gnomad[mode]['any_covered']:
-            result = result or 0
-            if not gnomad[mode]['data']:
-                continue
-            total_an += gnomad[mode]['data'][0]['an']
-            if hom:
-                result += gnomad[mode]['data'][0]['hom'] * 2
-            else:
-                result += gnomad[mode]['data'][0]['ac']
-    # not covered
-    if not result:
-        return result
-    else:
-        return float(result) / total_an
-
-'''
 parse protein atlas, given tissue
 result = {
     ENSG0000:[{
@@ -294,6 +272,7 @@ def make_df(a):
             header = ['symbol','description','samples','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster','gene_id','original_gene_id','cnv_related']
             if k == 'recessive':
                 header = header[:13]+['gnomad_hom_af']+header[13:]
+                header = header[:6]+['pRec']+header[6:]
             else:
                 header = header[:6]+['pLI']+header[6:]
             # add knowns
@@ -356,7 +335,7 @@ def make_array(h,v):
         for i in v:
             for variant in i['variants']:
                 if variant['type'] == 'cnv':
-                    ary.append('%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % variant)
+                    ary.append('%(type_)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % variant)
                 else:
                     ary.append(None)
     # will remove cnvs
@@ -536,9 +515,9 @@ class IRDC_variant(Variants.Variant):
         self.most_severe_consequence = None
 
 class IRDC_variants(Variants.Variants):
-    def __init__(self,variant_ids,db_conn=sqlite3.connect('irdc.db'),varsome_key=None):
+    def __init__(self,variant_ids,db_conn=sqlite3.connect('irdc.db'),path_to_gnomad=None):
         db_conn.text_factory = str
-        Variants.Variants.__init__(self,db_conn,variant_ids,varsome_key=varsome_key)
+        Variants.Variants.__init__(self,db_conn,variant_ids,path_to_gnomad=path_to_gnomad)
 
 class IRDC_gene(Genes.Gene):
     '''
@@ -573,7 +552,7 @@ class Patient:
         self.options = options
         self.relatives = {}
         self.exome_rare_file_path = os.path.join(options['irdc_exome_folder'],'rare_variants')
-        self.exome_cnv_file_path = options['irdc_exome_cnv_folder']
+        self.exome_cnv_file = options['irdc_exome_cnv_file']
         self.wgs_rare_file_path = options['irdc_wgs_folder']
         self.G = G # a shared IRDC_genes object, to help translate symbols
         self.known = known
@@ -590,7 +569,7 @@ class Patient:
         self.mysql = sqlite_utils.dict_factory(cursor,cursor.fetchone())
         self.irdc_id = self.mysql['project_associated_id']
         # find rare and cnv files locations
-        self.exome_rare_file, self.exome_cnv_file, self.exome_cnv_X_file, self.wgs_rare_file = self._populate_file_locations(self.mysql)
+        self.exome_rare_file, self.wgs_rare_file = self._populate_file_locations(self.mysql)
         '''
         find relatives and their Affected / HPO
         '''
@@ -615,22 +594,17 @@ class Patient:
         
         for k,v in self.relatives.iteritems():
             # get batch folder
-            v['exome_rare_file'], v['exome_cnv_file'], v['exome_cnv_X_file'], v['wgs_rare_file'] = self._populate_file_locations(v)
+            v['exome_rare_file'], v['wgs_rare_file'] = self._populate_file_locations(v)
 
     '''
-    populate file locations. One for rare file, two for cnv (cnv and cnv_X) files
+    populate file locations. One for rare file. currently not doing anything for wgs
     '''
     def _populate_file_locations(self,v):
         batch = 'IRDC_'+v['project_associated_id'].split('_')[1]
-        cnv_name = '_'.join(v['project_associated_id'].split('_')[2:])
         exome_rare = os.path.join(self.exome_rare_file_path, v['project_associated_id']+'.csv')
-        exome_cnv = os.path.join(self.exome_cnv_file_path,batch,'multi_exons',cnv_name+'_sorted_unique.bam.cnv')
-        exome_cnv_x = os.path.join(self.exome_cnv_file_path,batch,'multi_exons',cnv_name+'_sorted_unique.bam_X.cnv')
         wgs_rare = os.path.join(self.wgs_rare_file_path,'rare-VEP_OXF_%s-annotations.csv' % v['Name'])
         return (
             exome_rare,
-            exome_cnv if os.path.isfile(exome_cnv) else None,
-            exome_cnv_x if os.path.isfile(exome_cnv_x) else None,
             wgs_rare if os.path.isfile(wgs_rare) else None,
         )
     
@@ -724,7 +698,7 @@ class Patient:
                     'samples':row['Samples'],
                 })
         # annotate variants
-        V = IRDC_variants(variants,varsome_key=self.options['varsome_API_key'])
+        V = IRDC_variants(variants,path_to_gnomad=self.options['path_to_gnomad'])
         V.cadd_file = self.options['cadd_file']
         kaviars = V.kaviar_af
         gnomads = V.gnomad
@@ -759,89 +733,72 @@ class Patient:
             relatives = [v['project_associated_id'] for k,v in self.relatives.items()]
         # add itself
         relatives.append(self.irdc_id)
-        relatives = set(relatives)
+        # add _sorted_unique.bam
+        relatives = set(['{}_sorted_unique.bam'.format(i) for i in relatives])
         # find batch number
         batch_no = self.irdc_id.split('_')[1]
-        proband_df = pd.DataFrame()
-        all_df = pd.DataFrame()
-        # merge everything into a big df
-        for folder in [i for i in os.listdir(self.exome_cnv_file_path) if 'batch' in i]:
-            # if in the right folder? if not, append to all_df. if yes, store proband related cnvs in df, else in all_df
-            if folder == batch_no:
-                bingo = True
-            else:
-                bingo = False
-            for file in os.listdir(os.path.join(self.exome_cnv_file_path,folder)):
-                if not file.endswith('.csv'): continue
-                f = os.path.join(self.exome_cnv_file_path,folder,file)
-                # batch1 has strange ids. (not start with IRDC) remove them.
-                this_df = pd.read_csv(f)
-                this_df = this_df[this_df.apply(lambda x:x['sample'].startswith('IRDC'), axis=1)]
-                # normalise this_df's sample field
-                this_df['sample'] = this_df['sample'].apply(lambda x: x[:-18])
-                g = this_df.groupby('id')['sample'].apply(list)
-                
-                # don't change this iteritems!!! this is a pandas series
-                # all_df
-                good_key = []
-                for k,v in g.iteritems():
-                    if len(set(v) - relatives) == 1:
-                        good_key.append(k)
-            
-                all_df = all_df.append( this_df[this_df['id'].isin(good_key)] )
-                # remove rows with not-unique ids (if not only duplicated in relatives), or not belong to proband
-                if bingo:
-                    good_key = []
-                    for k,v in g.iteritems():
-                        if not (set(v) - relatives):
-                            good_key.append(k)
-                    this_df = this_df[this_df['id'].isin(good_key)]
-                    proband_df = proband_df.append(this_df)
-        all_df = all_df.reset_index(drop=True)
-        proband_df = proband_df.reset_index(drop=True)
-        return proband_df, all_df
+        all_df = pd.read_csv(self.exome_cnv_file)
+        # subsetting on regions with sample id
+        grp = all_df.groupby('id')['sample'].apply(set)
+        bad_ids = grp.index
+        grp = grp[grp.apply(lambda x: '{}_sorted_unique.bam'.format(self.irdc_id) in x)]
+        # ids that only shared by relatives
+        ids = grp[grp.apply(lambda x: not (x - relatives))].index
+        
+        # not overlapped by any of other cnvs
+        bad_ids = set(bad_ids) - set(ids)
+        bad_dict = defaultdict(list)
+        for i in bad_ids:
+            ch,r = i.split(':')
+            s,e = r.split('-')
+            bad_dict[ch].append((int(s),int(e)))
+        good_ids = []
+        for i in ids:
+            BAD = 0
+            ch,r = i.split(':')
+            s,e = [int(j) for j in r.split('-')]
+            l1 = e-s+1
+            for j in bad_dict[ch]:
+                l2 = j[1]-j[0]+1
+                a = sorted([s,e,j[0],j[1]])
+                tl = a[3]-a[0]+1
+                if tl < l1 + l2:
+                    BAD = 1
+                    break
+            if not BAD:
+                good_ids.append(i)
+        return all_df.set_index('id').loc[good_ids]
     
     '''
     NOT FINISHED!!!!
     get unique cnv (excluding relatives)
     unique is 'batch' unique. 
     will also look for patients with overlapping cnvs
+    '%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s'
     '''
     @property
     def exome_unique_cnv(self):
         if getattr(self, '_exome_unique_cnv', None) is None:
-            result = []
-            proband_df, all_df = self._get_exome_cnv()
-            sys.exit()
-                    
+            exome_df = self._get_exome_cnv()
+            result = {}
+            for ind,row in exome_df.iterrows():
+                if pd.isnull(row['ENSEMBL']): continue
+                gs = row['ENSEMBL'].split(';')
+                for g in gs:
+                    result[g] = result.get(g,{'variants':[],'original_symbol':original_symbol})
+                    result[g]['variants'].append({
+                        'type':'cnv',
+                        'type_':row['type'],
+                        'reads_observed':row['reads.observed'],
+                        'reads_expected':row['reads.expected'],
+                        'ratio':row['reads.ratio'],
+                        'symbols':row['GeneName'],
+                    })
         
-            for i in self.exome_cnv:
-                # search all the files
-                bad = None
-                if i['chrom'] != 'X':
-                    bad = _get_exome_unique_cnv(i,cnv_files)
-                else:
-                    bad = _get_exome_unique_cnv(i,cnv_X_files)
-                if not bad:
-                    result.append(i)
-            # convert the data into a dict of genes
-            result2 = {}
-            for i in result:
-                for g in i['genes']:
-                    result2[g] = result2.get(g,[])
-                    result2[g].append(i)
-            self._exome_unique_cnv = result2
+            self._exome_unique_cnv = result
+            print(result)
         return self._exome_unique_cnv
 
-    @property
-    def exome_cnv(self):
-        if getattr(self, '_exome_cnv', None) is None:
-            if self.exome_cnv_file:
-                self._exome_cnv = self._get_exome_cnv(self.exome_cnv_file) + self._get_exome_cnv(self.exome_cnv_X_file)
-            else:
-                self._exome_cnv = []
-        return self._exome_cnv
-    
     '''
     extract genes from the rare_variant file
     '''
@@ -877,7 +834,7 @@ class report:
                 field_rules[i] = field_helpers.get(i, None)
 
             # make gnomad / kaviar / pubmedscore / pLI methods
-            for i in ['gnomad_af', 'gnomad_hom_af', 'kaviar_af', 'pubmed_score', 'pLI']:
+            for i in ['gnomad_af', 'gnomad_hom_af', 'kaviar_af', 'pubmed_score', 'pLI', 'pRec']:
                 if i not in fields_to_check: continue
                 field_rules[i] = field_helpers[i](fields_to_check[i])
             self._field_rules = field_rules
@@ -1032,8 +989,8 @@ class report:
     result = {
         //family_history: this will be added when writing to excel
         relatives:{}
-        dominant:[{recessive + pLI - gnomad_hom_af}]
-        X:[{recessive + pLI - gnomad_hom_af}]
+        dominant:[{recessive + pLI - gnomad_hom_af - pRec}]
+        X:[{recessive + pLI - gnomad_hom_af - pRec}]
         recessive:[{
             gene_id:
             symbol:
@@ -1126,6 +1083,7 @@ class report:
             original_id = k1
             symbol = GENES.symbol.get(k1,None)
             pLI = GENES.pLI.get(k1,None)
+            pRec = GENES.pRec.get(k1,None)
             if not symbol:
                 # highly likely a retired ensemblID
                 # use the original symbol to find gene_id
@@ -1135,6 +1093,7 @@ class report:
                     temp_G = IRDC_gene(k1)
                     symbol = temp_G.symbol
                     pLI = temp_G.pLI
+                    pRec = temp_G.pRec
                 else:
                     # can't do anything with this, such as ENSG00000211940: IGHV3-9
                     symbol = v1['original_symbol']
@@ -1190,7 +1149,7 @@ class report:
                     v['gnomad_af'] = -1
                     rare_variants.append(v)
                 else:
-                    v['gnomad_af'] = parse_gnomad(v['gnomad'])
+                    v['gnomad_af'] = v['gnomad']['gnomad_af']
                     if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
                         rare_variants.append(v)
                     elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
@@ -1212,7 +1171,7 @@ class report:
             if len(rare_variants) + len(rare_cnv):
                 # add to dominant
                 d_this = copy.copy(this)
-                # add pLI
+                # add pLI and pRec
                 d_this['pLI'] = pLI
                 # add variants
                 d_this['variants'] = rare_variants
@@ -1260,8 +1219,8 @@ class report:
                     v['gnomad_hom_af'] = -1
                     rare_variants.append(v)
                 else:
-                    v['gnomad_af'] = parse_gnomad(v['gnomad'])
-                    v['gnomad_hom_af'] = parse_gnomad(v['gnomad'],hom=True)
+                    v['gnomad_af'] = v['gnomad']['gnomad_af']
+                    v['gnomad_hom_af'] = v['gnomad']['gnomad_hom_af']
                     if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
                         rare_variants.append(v)
             rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in cnv])
@@ -1310,7 +1269,6 @@ class report:
                 for i in r_this['variants']:
                     i['gnomad'] = None
                 r_this['cnv'] = [ i for i in rare_cnv if i['id'] in rare_ids]
-                
                 # any of the variants are close together?
                 igv_check = None
                 for c in combinations(rare_ids,2):
@@ -1326,7 +1284,8 @@ class report:
                     igv_check = gap_check((start0,end0),(start1,end1),self.options['igv_check_size'])
                     if igv_check: break
                 r_this['igv_check'] = igv_check
-                
+                # add pRec
+                r_this['pRec'] = pRec
                 # add hpos
                 r_this['hpos'] = []
                 for h in hpos:
