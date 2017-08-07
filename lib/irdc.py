@@ -785,7 +785,7 @@ class Patient:
                 if pd.isnull(row['ENSEMBL']): continue
                 gs = row['ENSEMBL'].split(';')
                 for g in gs:
-                    result[g] = result.get(g,{'variants':[],'original_symbol':original_symbol})
+                    result[g] = result.get(g,{'variants':[]})
                     result[g]['variants'].append({
                         'type':'cnv',
                         'type_':row['type'],
@@ -796,7 +796,6 @@ class Patient:
                     })
         
             self._exome_unique_cnv = result
-            print(result)
         return self._exome_unique_cnv
 
     '''
