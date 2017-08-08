@@ -27,6 +27,8 @@ import numpy as np
 import xlsxwriter as xw
 from fields_update_methods import field_helpers
 
+from guppy import hpy
+
 '''
 globals
 '''
@@ -327,7 +329,7 @@ def make_array(h,v):
     elif h in ['filter','description','samples','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
         for i in v:
             for variant in i['variants']:
-                if variant['type'] == 'variant':
+                if variant['type'] == 'variant' or h in {'genotype','samples','consequence'}:
                     ary.append(variant[h])
                 else:
                     ary.append(None)
@@ -733,15 +735,16 @@ class Patient:
             relatives = [v['project_associated_id'] for k,v in self.relatives.items()]
         # add itself
         relatives.append(self.irdc_id)
-        # add _sorted_unique.bam
-        relatives = set(['{}_sorted_unique.bam'.format(i) for i in relatives])
+        relatives = set(relatives)
         # find batch number
-        batch_no = self.irdc_id.split('_')[1]
+        #batch_no = self.irdc_id.split('_')[1]
         all_df = pd.read_csv(self.exome_cnv_file)
+        # remove _sorted_unique.bam from sample column
+        all_df['sample'] = all_df['sample'].apply(lambda x: x.split('_sorted_unique.bam')[0])
         # subsetting on regions with sample id
         grp = all_df.groupby('id')['sample'].apply(set)
         bad_ids = grp.index
-        grp = grp[grp.apply(lambda x: '{}_sorted_unique.bam'.format(self.irdc_id) in x)]
+        grp = grp[grp.apply(lambda x: self.irdc_id in x)]
         # ids that only shared by relatives
         ids = grp[grp.apply(lambda x: not (x - relatives))].index
         
@@ -785,14 +788,18 @@ class Patient:
                 if pd.isnull(row['ENSEMBL']): continue
                 gs = row['ENSEMBL'].split(';')
                 for g in gs:
-                    result[g] = result.get(g,{'variants':[]})
-                    result[g]['variants'].append({
+                    result[g] = result.get(g,[])
+                    result[g].append({
+                        'id':row.name,
                         'type':'cnv',
                         'type_':row['type'],
+                        'consequence':'CNV',
                         'reads_observed':row['reads.observed'],
                         'reads_expected':row['reads.expected'],
                         'ratio':row['reads.ratio'],
                         'symbols':row['GeneName'],
+                        'samples':row['sample'],
+                        'genotype': 'het' if self.options['cnv']['lower_ratio']<float(row['reads.observed']) / float(row['reads.expected'])<self.options['cnv']['upper_ratio'] else 'hom',
                     })
         
             self._exome_unique_cnv = result
@@ -881,6 +888,12 @@ class report:
     '''
     def run(self):
         for p in self.options['patients']:
+            ### profiling
+            hp = hpy()
+            h = hp.heap()
+            rcs = h.byid
+            print rcs
+            ########
             print '----doing----'
             print p
             if p in self.done:
@@ -971,9 +984,10 @@ class report:
                     export['history'] = history_df
                     
                 write_to_excel(export,f,ped_loc,changes,self.options['highlight_rules'])
-        # write bad genes
-        outf = open(self.options['bad_genes'],'w')
-        outf.write(' '.join(set(self.G._bad_genes)))
+            # write bad genes
+            outf = open(self.options['bad_genes'],'w')
+            self.G._bad_genes = list(set(self.G._bad_genes))
+            outf.write(' '.join(self.G._bad_genes))
         print 'All done'
     '''
     analysis of a patient
@@ -1077,16 +1091,16 @@ class report:
             'X':[],
         }
 
-        for k1,v1 in P.exome_rare_snp_genes.iteritems():
+        for k1 in set(P.exome_rare_snp_genes.keys() + exome_unique_cnv.keys()): #P.exome_rare_snp_genes.items():
             # make a temp entry
             original_id = k1
             symbol = GENES.symbol.get(k1,None)
             pLI = GENES.pLI.get(k1,None)
             pRec = GENES.pRec.get(k1,None)
-            if not symbol:
+            if not symbol and k1 in P.exome_rare_snp_genes:
                 # highly likely a retired ensemblID
                 # use the original symbol to find gene_id
-                temp =  self.G.symbols_to_ensemblIds([v1['original_symbol']])
+                temp =  self.G.symbols_to_ensemblIds([P.exome_rare_snp_genes[k1]['original_symbol']])
                 if temp:
                     k1 = temp.values()[0]
                     temp_G = IRDC_gene(k1)
@@ -1095,7 +1109,7 @@ class report:
                     pRec = temp_G.pRec
                 else:
                     # can't do anything with this, such as ENSG00000211940: IGHV3-9
-                    symbol = v1['original_symbol']
+                    symbol = P.exome_rare_snp_genes[k1]['original_symbol']
         
             this = {
                 'gene_id':k1,
@@ -1130,38 +1144,40 @@ class report:
 
             # dominant?
             rare_variants = []
-            for v in v1['variants']:
-                bad = 0
-                for p in relatives_P:
-                    this_v = [z['cleaned_id'] for z in p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']]
-                    # affected/unaffected relatives have it?
-                    if p.mysql['Affected'] != P.mysql['Affected'] and v['cleaned_id'] in this_v:
-                        bad = 1
-                        break
-                    if p.mysql['Affected'] == P.mysql['Affected'] and v['cleaned_id'] not in this_v:
-                        bad = 1
-                        break
-                if bad: continue
-                # gnomad?
-                # first check if variant has 0
-                if not check_variant(v['cleaned_id']):
-                    v['gnomad_af'] = -1
-                    rare_variants.append(v)
-                else:
-                    v['gnomad_af'] = v['gnomad']['gnomad_af']
-                    if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
+            if k1 in P.exome_rare_snp_genes:
+                for v in P.exome_rare_snp_genes[k1]['variants']:
+                    bad = 0
+                    for p in relatives_P:
+                        this_v = [z['cleaned_id'] for z in p.exome_rare_snp_genes.get(k1,{'variants':[]})['variants']]
+                        # affected/unaffected relatives have it?
+                        if p.mysql['Affected'] != P.mysql['Affected'] and v['cleaned_id'] in this_v:
+                            bad = 1
+                            break
+                        if p.mysql['Affected'] == P.mysql['Affected'] and v['cleaned_id'] not in this_v:
+                            bad = 1
+                            break
+                    if bad: continue
+                    # gnomad?
+                    # first check if variant has 0
+                    if not check_variant(v['cleaned_id']):
+                        v['gnomad_af'] = -1
                         rare_variants.append(v)
-                    elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
-                        rare_variants.append(v)
+                    else:
+                        v['gnomad_af'] = v['gnomad']['gnomad_af']
+                        if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                            rare_variants.append(v)
+                        elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
+                            rare_variants.append(v)
             rare_cnv = []
+            if cnv:
+                print(cnv)
             for c in cnv:
                 bad = 0
                 for p in relatives_P:
-                    this_c = [z['id'] for z in exome_unique_cnv.get(k1,[])]
-                    if p.mysql['Affected'] != P.mysql['Affected'] and z['id'] in this_c:
+                    if p.mysql['Affected'] != P.mysql['Affected'] and p.irdc_id in c['samples']:
                         bad = 1
                         break
-                    if p.mysql['Affected'] == P.mysql['Affected'] and z['id'] not in this_c:
+                    if p.mysql['Affected'] == P.mysql['Affected'] and p.irdc_id not in c['samples']:
                         bad = 1
                         break
                 if bad: continue
@@ -1173,8 +1189,7 @@ class report:
                 # add pLI and pRec
                 d_this['pLI'] = pLI
                 # add variants
-                d_this['variants'] = rare_variants
-                d_this['cnv'] = rare_cnv
+                d_this['variants'] = rare_variants + rare_cnv
                 # add hpos
                 d_this['hpos'] = []
                 for h in hpos:
@@ -1185,7 +1200,7 @@ class report:
                     })
                 
                 # any of the variants are close together?
-                rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in cnv])
+                rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in rare_cnv])
                 igv_check = None
                 for c in combinations(rare_ids,2):
                     start0 = start1 = end0 = end1 = None
@@ -1210,18 +1225,19 @@ class report:
             # recessive?
             rare_variants = []
             # rare_cnv remains the same
-            for v in v1['variants']:
-                # gnomad hom? not check kaviar since it doesnt have hom af
-                # first check if 0 in alt
-                if not check_variant(v['cleaned_id']):
-                    v['gnomad_af'] = -1
-                    v['gnomad_hom_af'] = -1
-                    rare_variants.append(v)
-                else:
-                    v['gnomad_af'] = v['gnomad']['gnomad_af']
-                    v['gnomad_hom_af'] = v['gnomad']['gnomad_hom_af']
-                    if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
+            if k1 in P.exome_rare_snp_genes:
+                for v in P.exome_rare_snp_genes[k1]['variants']:
+                    # gnomad hom? not check kaviar since it doesnt have hom af
+                    # first check if 0 in alt
+                    if not check_variant(v['cleaned_id']):
+                        v['gnomad_af'] = -1
+                        v['gnomad_hom_af'] = -1
                         rare_variants.append(v)
+                    else:
+                        v['gnomad_af'] = v['gnomad']['gnomad_af']
+                        v['gnomad_hom_af'] = v['gnomad']['gnomad_hom_af']
+                        if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                            rare_variants.append(v)
             rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in cnv])
 
             # intersect with affected
@@ -1237,7 +1253,7 @@ class report:
                 extra = []
                 for i in rare_variants+rare_cnv:
                     if i['id'] in rare_ids and i['genotype'] == 'hom':
-                        extra.append(i['cleaned_id'])
+                        extra.append(i['cleaned_id'] if 'cleaned_id' in i else i['id'])
                 rare_ids = list(rare_ids) + extra
 
                 good = None
@@ -1267,7 +1283,7 @@ class report:
                 r_this['variants'] = [i for i in rare_variants if i['cleaned_id'] in rare_ids]
                 for i in r_this['variants']:
                     i['gnomad'] = None
-                r_this['cnv'] = [ i for i in rare_cnv if i['id'] in rare_ids]
+                r_this['variants'] = r_this['variants'] + [ i for i in rare_cnv if i['id'] in rare_ids]
                 # any of the variants are close together?
                 igv_check = None
                 for c in combinations(rare_ids,2):
