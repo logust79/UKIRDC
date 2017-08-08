@@ -27,8 +27,6 @@ import numpy as np
 import xlsxwriter as xw
 from fields_update_methods import field_helpers
 
-from guppy import hpy
-
 '''
 globals
 '''
@@ -888,12 +886,6 @@ class report:
     '''
     def run(self):
         for p in self.options['patients']:
-            ### profiling
-            hp = hpy()
-            h = hp.heap()
-            rcs = h.byid
-            print rcs
-            ########
             print '----doing----'
             print p
             if p in self.done:
