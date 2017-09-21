@@ -54,6 +54,8 @@ def ek_field_helper_factory(cutoff):
         # convert np.nan to None
         try: float(A)
         except ValueError: return True
+        if B is None:
+            B = np.nan
         A,B = nan_to_([float(A),float(B)],0)
         # equal?
         if A == B:
