@@ -212,6 +212,8 @@ def format_excel(a,writer,changes,rules):
                         row_inds = a[sheet][a[sheet]['variant'].isin(v1)].index.tolist()
                         for i in row_inds:
                             cell_value = a[sheet].get_value(i,header[0])
+                            if pd.isnull(cell_value):
+                                cell_value = None
                             worksheet.write(i+1, 0, cell_value, rule_fmt[k1])
         
             # columns highlight
@@ -335,13 +337,13 @@ def make_array(h,v):
         for i in v:
             for variant in i['variants']:
                 if variant['type'] == 'cnv':
-                    ary.append('%(type_)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % variant)
+                    ary.append('%(type_)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s' % variant)
                 else:
                     ary.append(None)
     # will remove cnvs
     elif h == 'cnvs':
         for i in v:
-            this = ['%(id)s:%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s:symbols:%(symbols)s' % j for j in i['cnv']]
+            this = ['%(id)s:%(type)s:reads_observed:%(reads_observed)s:reads_expected:%(reads_expected)s:ratio:%(ratio)s' % j for j in i['cnv']]
             ary.append(', '.join(this))
     elif h in ['Name','project_associated_id','Affected','role']:
         for k,v in v.items():
@@ -587,7 +589,19 @@ class Patient:
             if re.match('3\d+',temp['Name']):
                 # turn Hpo,Notes back to data from json
                 temp['HPO'] = json.loads(temp['HPO'])
-                temp['Notes'] = json.loads(temp['Notes'])
+                try:
+                    temp['Notes'] = json.loads(temp['Notes'])
+                except ValueError:
+                    temp['Notes'] = {
+                        "Initials": "",
+                        "Age_of_Onset": "",
+                        "Clinical_Phenotype": "",
+                        "Comibidities": "",
+                        "EDTS": "",
+                        "Visual fields": "",
+                        "Visual acuities": "",
+                        "Family History": ""
+                    }
                 self.relatives[temp['Name']] = temp
     
         # find rare files and cnv files
@@ -795,7 +809,7 @@ class Patient:
                         'reads_observed':row['reads.observed'],
                         'reads_expected':row['reads.expected'],
                         'ratio':row['reads.ratio'],
-                        'symbols':row['GeneName'],
+                        #'symbols':row['GeneName'],
                         'samples':row['sample'],
                         'genotype': 'het' if self.options['cnv']['lower_ratio']<float(row['reads.observed']) / float(row['reads.expected'])<self.options['cnv']['upper_ratio'] else 'hom',
                     })
@@ -909,7 +923,19 @@ class report:
                     this_p = Patient(r,self.options)
                     # relatives:
                     ped_loc = os.path.join(ped_loc, 'pt%s' % this_p.mysql['linked_id'], '_pedigree.png')
-                    notes = json.loads(this_p.mysql['Notes'])
+                    try:
+                        notes = json.loads(this_p.mysql['Notes'])
+                    except ValueError:
+                        notes = {
+                            "Initials": "",
+                            "Age_of_Onset": "",
+                            "Clinical_Phenotype": "",
+                            "Comibidities": "",
+                            "EDTS": "",
+                            "Visual fields": "",
+                            "Visual acuities": "",
+                            "Family History": ""
+                        }
                 else:
                     this_p = [v for k,v in result['relatives'].iteritems() if k == r][0]
                     notes = this_p['Notes']
