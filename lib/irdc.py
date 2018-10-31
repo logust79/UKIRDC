@@ -1,6 +1,7 @@
 '''
 irdc analysis
 '''
+from __future__ import division, print_function
 import os
 import sys
 import logging
@@ -20,12 +21,17 @@ import copy
 import time
 from collections import defaultdict
 from itertools import combinations
-from urllib2 import HTTPError, URLError
+try:
+    from urllib2 import HTTPError, URLError
+except ModuleNotFoundError:
+    from urllib.error import HTTPError, URLError
+    
 from Bio import Entrez
 import pandas as pd
 import numpy as np
 import xlsxwriter as xw
 from fields_update_methods import field_helpers
+import errno
 
 '''
 globals
@@ -41,6 +47,16 @@ EARLY_ONSET_HPOS = [
     'HP:0011461', #Fetal onset
     ]
 
+'''
+mkdir -p
+'''
+def mkdir_p(dirname):
+    try:
+        os.mkdir(dirname)
+    except OSError as exc:
+        if exc.errno != errno.EEXIST:
+            raise
+        pass
 '''
 check variant has 0 as alt
 '''
@@ -271,7 +287,7 @@ def make_df(a):
         if k in ['known','hpos']: continue
         if k in ['recessive','dominant','X']:
 
-            header = ['symbol','description','samples','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster','gene_id','original_gene_id','cnv_related']
+            header = ['symbol','description','samples','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2_Pred','LJB_SIFT_Pred','LJB_MutationTaster_Pred','gene_id','original_gene_id','cnv_related']
             if k == 'recessive':
                 header = header[:13]+['gnomad_hom_af']+header[13:]
                 header = header[:6]+['pRec']+header[6:]
@@ -326,7 +342,7 @@ def make_array(h,v):
                     ary.append(variant['cleaned_id'])
                 else:
                     ary.append(variant['id'])
-    elif h in ['filter','description','samples','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2','LJB_SIFT','LJB_MutationTaster', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
+    elif h in ['filter','description','samples','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2_Pred','LJB_SIFT_Pred','LJB_MutationTaster_Pred', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
         for i in v:
             for variant in i['variants']:
                 if variant['type'] == 'variant' or h in {'genotype','samples','consequence'}:
@@ -439,7 +455,7 @@ def pubmed_query(gene,keywords,lag=None,email='logust@yahoo.com'):
                 attempt += 1
     # now done the search. let's get results
     count = int(search_results["Count"])
-    print count
+    print(count)
     results = {'results':[], 'total_score':0}
     # get search content
     if count:
@@ -519,7 +535,8 @@ class IRDC_variant(Variants.Variant):
 class IRDC_variants(Variants.Variants):
     def __init__(self,variant_ids,db_conn=sqlite3.connect('irdc.db'),path_to_gnomad=None):
         db_conn.text_factory = str
-        Variants.Variants.__init__(self,db_conn,variant_ids,path_to_gnomad=path_to_gnomad)
+        #Variants.Variants.__init__(self,db_conn,variant_ids,path_to_gnomad=path_to_gnomad)
+        super(IRDC_variants,self).__init__(db_conn,variant_ids, path_to_gnomad=path_to_gnomad)
 
 class IRDC_gene(Genes.Gene):
     '''
@@ -553,7 +570,7 @@ class Patient:
         self.id = id
         self.options = options
         self.relatives = {}
-        self.exome_rare_file_path = os.path.join(options['irdc_exome_folder'],'rare_variants')
+        self.exome_rare_file_path = options['irdc_exome_folder'] #os.path.join(options['irdc_exome_folder'],'rare_variants')
         self.exome_cnv_file = options['irdc_exome_cnv_file']
         self.wgs_rare_file_path = options['irdc_wgs_folder']
         self.G = G # a shared IRDC_genes object, to help translate symbols
@@ -577,8 +594,7 @@ class Patient:
         '''
         sql = '''SELECT Name, patient_id, role, Notes, Affected, HPO, SEX, project_associated_id FROM patient_family_relation
                 JOIN patient ON patient_id = patient.ID JOIN project_relation ON patient_id = linked_id
-                WHERE family_id = (SELECT family_id FROM patient_family_relation WHERE patient_id = %s) AND patient_id > 0
-				AND db_name = 'patient' AND project_id = 1'''
+                WHERE family_id = (SELECT family_id FROM patient_family_relation WHERE patient_id = %s) AND patient_id > 0 AND db_name = 'patient' AND project_id = 1'''
         cursor.execute(sql,(self.mysql['linked_id'],))
         for i in cursor:
             temp = sqlite_utils.dict_factory(cursor,i)
@@ -606,7 +622,7 @@ class Patient:
     
         # find rare files and cnv files
         
-        for k,v in self.relatives.iteritems():
+        for k,v in self.relatives.items():
             # get batch folder
             v['exome_rare_file'], v['wgs_rare_file'] = self._populate_file_locations(v)
 
@@ -702,9 +718,9 @@ class Patient:
                     'dbSNP137':row['dbSNP137'],
                     'consequence':row['ExonicFunc'] or row['Func'],
                     'description':row['Description'],
-                    'LJB_PolyPhen2':row['LJB_PolyPhen2'],
-                    'LJB_SIFT':row['LJB_SIFT'],
-                    'LJB_MutationTaster':row['LJB_MutationTaster'],
+                    'LJB_PolyPhen2_Pred':row['LJB_PolyPhen2_Pred'],
+                    'LJB_SIFT_Pred':row['LJB_SIFT_Pred'],
+                    'LJB_MutationTaster_Pred':row['LJB_MutationTaster_Pred'],
                     'omim':row['Omim'],
                     'transcript':transcript,
                     'Cchange':Cchange,
@@ -718,7 +734,7 @@ class Patient:
         gnomads = V.gnomad
         cadd = V.cadd_phred
         cleaned = V.cleaned_variants
-        for k,v in result.iteritems():
+        for k,v in result.items():
             for i in v['variants']:
                 i['cleaned_id'] = cleaned[i['variant_id']]
                 i['id'] = i['cleaned_id']
@@ -836,6 +852,8 @@ class report:
         self.G = G
         # relatives are done together with probands. push them here to avoid repetitive calculation
         self.done = []
+        # mkdir outdir
+        mkdir_p(self.options['output_dir'])
     
     '''
     fields update rules
@@ -880,7 +898,7 @@ class report:
         if getattr(self, '_retnet', None) is None:
             retnet = json.load(open(self.options['retnet'],'r'))
             myd = self.G.symbols_to_ensemblIds(retnet.keys())
-            for k in retnet.keys():
+            for k in list(retnet.keys()):
                 # change symbols to ensembl ids
                 if k not in myd: continue
                 retnet[myd[k]] = retnet.pop(k)
@@ -900,8 +918,8 @@ class report:
     '''
     def run(self):
         for p in self.options['patients']:
-            print '----doing----'
-            print p
+            print('----doing----')
+            print(p)
             if p in self.done:
                 # already done, pass
                 continue
@@ -910,8 +928,8 @@ class report:
             doing = [p]
             if result['relatives']:
                 # has relative,find similarly affected p
-                this_affected = [v['Affected'] for k,v in result['relatives'].iteritems() if k == p][0]
-                doing = [k for k,v in result['relatives'].iteritems() if v['Affected'] == this_affected]
+                this_affected = [v['Affected'] for k,v in result['relatives'].items() if k == p][0]
+                doing = [k for k,v in result['relatives'].items() if v['Affected'] == this_affected]
             # make df for analysis
             export = make_df(result)
             # write to excels for this and relatives
@@ -937,7 +955,7 @@ class report:
                             "Family History": ""
                         }
                 else:
-                    this_p = [v for k,v in result['relatives'].iteritems() if k == r][0]
+                    this_p = [v for k,v in result['relatives'].items() if k == r][0]
                     notes = this_p['Notes']
                     ped_loc = os.path.join(ped_loc, 'pt%s' % this_p['patient_id'], '_pedigree.png')
                 # make notes a dict of arrays
@@ -1006,7 +1024,7 @@ class report:
             outf = open(self.options['bad_genes'],'w')
             self.G._bad_genes = list(set(self.G._bad_genes))
             outf.write(' '.join(self.G._bad_genes))
-        print 'All done'
+        print('All done')
     '''
     analysis of a patient
 
@@ -1074,7 +1092,7 @@ class report:
         # hpos
         # intersection of hpos of affected relatives
         hpos = set([i['id'] for i in json.loads(P.mysql['HPO'])])
-        for k2,v2 in P.relatives.iteritems():
+        for k2,v2 in P.relatives.items():
             if v2['Affected'] == 1:
                 hpos = hpos & set([i['id'] for i in v2['HPO']])
         # turn hpos to an array of dict
@@ -1124,7 +1142,11 @@ class report:
                     temp_G = IRDC_gene(k1)
                     symbol = temp_G.symbol
                     pLI = temp_G.pLI
-                    pRec = temp_G.pRec
+                    try:
+                        pRec = temp_G.pRec
+                    except AttributeError as err:
+                        print('{} has no pRec'.format(temp))
+                        pRec = -1
                 else:
                     # can't do anything with this, such as ENSG00000211940: IGHV3-9
                     symbol = P.exome_rare_snp_genes[k1]['original_symbol']
@@ -1142,7 +1164,7 @@ class report:
             if not pubmed:
                 # use scrutinise to search
                 keywords = P.options['mongo']['key'][1:-1].split(',')
-                print 'search pubmed for '+this['symbol']
+                print('search pubmed for '+this['symbol'])
                 pubmed_result = pubmed_query(this['symbol'],keywords)
                 pubmed = {'result':pubmed_result}
                 # update database
@@ -1152,7 +1174,7 @@ class report:
             this['pubmed_score'] = pubmed['result']['total_score']
             this['pubmed'] = [i['id'] for i in pubmed['result']['results']]
             # known
-            for k2,v2 in P.known.iteritems():
+            for k2,v2 in P.known.items():
                 this[k2] = 'Y' if k1 in v2 else None
             # retnet
             this['retnet'] = P.retnet.get(k1,{})
@@ -1181,7 +1203,11 @@ class report:
                         v['gnomad_af'] = -1
                         rare_variants.append(v)
                     else:
-                        v['gnomad_af'] = v['gnomad']['gnomad_af']
+                        try:
+                            v['gnomad_af'] = v['gnomad']['gnomad_af']
+                        except TypeError as err:
+                            print(v,v['cleaned_id'])
+                            raise err
                         if v['gnomad_af'] != None and v['gnomad_af'] <= self.options['cut_offs'][onset]['gnomad']:
                             rare_variants.append(v)
                         elif v['gnomad_af'] == None and v['kaviar_af'] <= self.options['cut_offs'][onset]['kaviar']:
@@ -1299,8 +1325,10 @@ class report:
                 r_this = copy.copy(this)
                 # add variants, only the good ones
                 r_this['variants'] = [i for i in rare_variants if i['cleaned_id'] in rare_ids]
+                ''' might not be useful
                 for i in r_this['variants']:
                     i['gnomad'] = None
+                '''
                 r_this['variants'] = r_this['variants'] + [ i for i in rare_cnv if i['id'] in rare_ids]
                 # any of the variants are close together?
                 igv_check = None
