@@ -289,7 +289,7 @@ def make_df(a):
 
             header = ['symbol','description','samples','consequence','retnet','pubmed_score','pubmed','protein_atlas','omim','variant','genotype','filter','gnomad_af','kaviar_af','cadd_phred','transcript','Cchange','Pchange','igv_check','dbSNP137','LJB_PolyPhen2_Pred','LJB_SIFT_Pred','LJB_MutationTaster_Pred','gene_id','original_gene_id','cnv_related']
             if k == 'recessive':
-                header = header[:13]+['gnomad_hom_af']+header[13:]
+                header = header[:13]+['gnomad_hom_f']+header[13:]
                 header = header[:6]+['pRec']+header[6:]
             else:
                 header = header[:6]+['pLI']+header[6:]
@@ -342,7 +342,7 @@ def make_array(h,v):
                     ary.append(variant['cleaned_id'])
                 else:
                     ary.append(variant['id'])
-    elif h in ['filter','description','samples','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2_Pred','LJB_SIFT_Pred','LJB_MutationTaster_Pred', 'gnomad_af','kaviar_af','gnomad_hom_af','cadd_phred']:
+    elif h in ['filter','description','samples','genotype','transcript','Cchange','Pchange','omim','consequence','dbSNP137','LJB_PolyPhen2_Pred','LJB_SIFT_Pred','LJB_MutationTaster_Pred', 'gnomad_af','kaviar_af','gnomad_hom_f','cadd_phred']:
         for i in v:
             for variant in i['variants']:
                 if variant['type'] == 'variant' or h in {'genotype','samples','consequence'}:
@@ -870,7 +870,7 @@ class report:
                 field_rules[i] = field_helpers.get(i, None)
 
             # make gnomad / kaviar / pubmedscore / pLI methods
-            for i in ['gnomad_af', 'gnomad_hom_af', 'kaviar_af', 'pubmed_score', 'pLI', 'pRec']:
+            for i in ['gnomad_af', 'gnomad_hom_f', 'kaviar_af', 'pubmed_score', 'pLI', 'pRec']:
                 if i not in fields_to_check: continue
                 field_rules[i] = field_helpers[i](fields_to_check[i])
             self._field_rules = field_rules
@@ -1038,8 +1038,8 @@ class report:
     result = {
         //family_history: this will be added when writing to excel
         relatives:{}
-        dominant:[{recessive + pLI - gnomad_hom_af - pRec}]
-        X:[{recessive + pLI - gnomad_hom_af - pRec}]
+        dominant:[{recessive + pLI - gnomad_hom_f - pRec}]
+        X:[{recessive + pLI - gnomad_hom_f - pRec}]
         recessive:[{
             gene_id:
             symbol:
@@ -1057,7 +1057,7 @@ class report:
                 consequence:
                 filter:
                 genotype:
-                gnomad_hom_af:
+                gnomad_hom_f:
                 gnomad_af:
                 kaviar_af:
                 cadd_phred:
@@ -1275,12 +1275,12 @@ class report:
                     # first check if 0 in alt
                     if not check_variant(v['cleaned_id']):
                         v['gnomad_af'] = -1
-                        v['gnomad_hom_af'] = -1
+                        v['gnomad_hom_f'] = -1
                         rare_variants.append(v)
                     else:
                         v['gnomad_af'] = v['gnomad']['gnomad_af']
-                        v['gnomad_hom_af'] = v['gnomad']['gnomad_hom_af']
-                        if v['gnomad_hom_af'] == None or v['gnomad_hom_af'] <= self.options['cut_offs'][onset]['gnomad']:
+                        v['gnomad_hom_f'] = v['gnomad']['gnomad_hom_f']
+                        if v['gnomad_hom_f'] == None or v['gnomad_hom_f'] <= self.options['cut_offs'][onset]['gnomad']:
                             rare_variants.append(v)
             rare_ids = set([i['cleaned_id'] for i in rare_variants] + [i['id'] for i in cnv])
 
