@@ -4,3 +4,5 @@ test.py
 *.sqlite
 lib/*.pyc
 cadd_test.tsv
+.DS_Store
+data/
