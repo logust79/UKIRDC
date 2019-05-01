@@ -6,3 +6,8 @@ lib/*.pyc
 cadd_test.tsv
 .DS_Store
 data/
+*.txt
+*.vcf
+*.tsv
+setup_sshfs.sh
+setup.cfg
